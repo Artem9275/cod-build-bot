@@ -77,13 +77,15 @@ builds = load_data()
 # МЕНЮ
 # =========================
 def main_menu():
+    # Добавили кнопку для доната в самый низ главного меню
     keyboard = [
         ["🔥 Мета оружие"],
         ["🎯 Снайперские винтовки"],
         ["🔫 Штурмовые винтовки"],
         ["⚡ Пистолеты-пулеметы"],
         ["💣 Ручные пулеметы"],
-        ["💥 Дробовики"]
+        ["💥 Дробовики"],
+        ["☕ Поддержать автора"] 
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -102,7 +104,7 @@ def build_buttons(category, index, likes, comments, user_id=None):
     keyboard = [
         [
             InlineKeyboardButton(f"❤️ {likes}", callback_data=f"like|{category}|{index}"),
-            InlineKeyboardButton(f"💬 {comments}", callback_data=f"comment|{category}|{index}")
+            InlineKeyboardButton(f"💬 Читать/Писать ({comments})", callback_data=f"view_comms|{category}|{index}")
         ]
     ]
     if user_id == ADMIN_ID:
@@ -133,6 +135,26 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = context.user_data.get("state")
     user_id = update.message.from_user.id
 
+    # Сброс состояния при случайном нажатии кнопок меню
+    if current_state in ["waiting_comment", "waiting_description"]:
+        if text in ["⬅️ Назад", "➕ Добавить сборку", "📂 Посмотреть сборки", "☕ Поддержать автора"] or text in categories:
+            context.user_data["state"] = None
+            current_state = None
+
+    # --- КНОПКА ДОНАТА ---
+    if text == "☕ Поддержать автора":
+        context.user_data["state"] = None
+        donate_msg = (
+            "👋 Привет! Я создатель этого бота.\n\n"
+            "Если тебе заходят наши меты для КБ и ты хочешь поддержать проект копеечкой на энергетик, "
+            "можешь закинуть донат по реквизитам ниже. Любая поддержка помогает делать бота еще круче! 🚀\n\n"
+            "💳 **Карта (Сбербанк/Тинькофф/и тд):**\n"
+            "`2202208162561493` (Тёма)\n\n"
+            "Спасибо за поддержку, братишка! 🤝"
+        )
+        await update.message.reply_text(donate_msg, parse_mode="Markdown", reply_markup=main_menu())
+        return
+
     if current_state == "waiting_description":
         category = context.user_data.get("temp_category")
         photo = context.user_data.get("temp_photo")
@@ -149,7 +171,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["temp_photo"] = None
 
         await update.message.reply_photo(
-            photo=photo, caption=f"🔥 *Новая сборка в разделе {category}*!\n\n{text}",
+            photo=photo, caption=f"⚙️ *Описание модулей:*\n{text}",
             parse_mode="Markdown", reply_markup=build_buttons(category, index, 0, 0, user_id)
         )
         await update.message.reply_text("✅ Сборка успешно добавлена в базу!", reply_markup=category_menu())
@@ -167,7 +189,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         builds[category][index]["comments"].append(full_comment)
         save_data(builds)
         context.user_data["state"] = None
-        await update.message.reply_text("✅ Комментарий добавлен!", reply_markup=category_menu())
+        await update.message.reply_text("✅ Комментарий добавлен! Нажми 'Читать/Писать', чтобы увидеть его.", reply_markup=category_menu())
         return
 
     if text == "⬅️ Назад":
@@ -200,11 +222,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"📦 Загружаю кастомы для раздела: {category}...")
         for index, build in enumerate(builds[category]):
             keyboard = build_buttons(category, index, build["likes"], len(build["comments"]), user_id)
-            comments_text = ""
-            if build["comments"]:
-                comments_text = "\n\n💬 *Комментарии игроков:*\n" + "".join([f"\n• {c}" for c in build["comments"][-5:]])
             await update.message.reply_photo(
-                photo=build["photo"], caption=f"⚙️ *Описание модулей:*\n{build['description']}{comments_text}",
+                photo=build["photo"], caption=f"⚙️ *Описание модулей:*\n{build['description']}",
                 parse_mode="Markdown", reply_markup=keyboard
             )
         return
@@ -227,7 +246,16 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
+    
+    if query.data == "close_msg":
+        try:
+            await query.message.delete()
+        except: pass
+        return
+
     parts = query.data.split("|")
+    if len(parts) < 3: return
+    
     action, category, index = parts[0], parts[1], int(parts[2])
 
     if category not in builds or index >= len(builds[category]):
@@ -250,12 +278,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(reply_markup=build_buttons(category, index, build["likes"], len(build["comments"]), user_id))
         return
 
-    if action == "comment":
+    if action == "view_comms":
+        comms = build.get("comments", [])
+        if not comms:
+            text_comms = "📭 *Здесь пока нет комментариев.*\nНажми кнопку ниже, чтобы стать первым!"
+        else:
+            text_comms = "💬 *Комментарии игроков:*\n\n" + "\n".join([f"• {c}" for c in comms])
+        
+        keyboard = [
+            [InlineKeyboardButton("✍️ Написать комментарий", callback_data=f"add_comm|{category}|{index}")],
+            [InlineKeyboardButton("❌ Закрыть", callback_data="close_msg")]
+        ]
+        await query.message.reply_text(text=text_comms, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.answer()
+        return
+
+    if action == "add_comm":
         context.user_data["state"] = "waiting_comment"
         context.user_data["comment_category"] = category
         context.user_data["comment_index"] = index
         await query.answer()
-        await context.bot.send_message(chat_id=user_id, text=f"💬 Напиши свой комментарий и отправь его мне:")
+        await context.bot.send_message(chat_id=user_id, text=f"💬 Напиши свой комментарий текстом и отправь его мне:")
         return
 
     if action in ["del_build", "del_desc", "del_comms"]:
@@ -272,12 +315,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "del_comms": builds[category][index]["comments"] = []
         save_data(builds)
         
-        comments_text = ""
-        if builds[category][index]["comments"]:
-            comments_text = "\n\n💬 *Комментарии игроков:*\n" + "".join([f"\n• {c}" for c in builds[category][index]["comments"][-5:]])
-        
         await query.edit_message_caption(
-            caption=f"⚙️ *Описание модулей:*\n{builds[category][index]['description']}{comments_text}",
+            caption=f"⚙️ *Описание модулей:*\n{builds[category][index]['description']}",
             parse_mode="Markdown",
             reply_markup=build_buttons(category, index, build["likes"], len(build["comments"]), user_id)
         )
@@ -294,7 +333,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
-    print("Бот запущен с ОБЛАЧНЫМ сохранением! ☁️🚀")
+    print("Бот запущен! Кнопка доната добавлена. ☁️🚀")
     app.run_polling()
 
 if __name__ == "__main__":
