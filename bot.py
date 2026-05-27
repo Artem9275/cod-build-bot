@@ -16,10 +16,11 @@ from telegram.ext import (
 )
 
 # =========================
-# ТОКЕН БОТА
-# ВНИМАНИЕ: Обязательно смени токен в BotFather, так как старый скомпрометирован!
+# НАСТРОЙКИ БОТА И АДМИНА
 # =========================
-TOKEN = os.environ.get("BOT_TOKEN")
+TOKEN = "8912189908:AAHRiflwZb6ZCL1pOQXoXQ-aY3QF1YtIzsQ"
+ADMIN_ID = 7083142762  # <--- ТЁМА, ВПИШИ СЮДА СВОЙ TELEGRAM ID (ЦИФРЫ)
+
 # =========================
 # БАЗА СБОРОК И ЕЁ СОХРАНЕНИЕ
 # =========================
@@ -32,7 +33,6 @@ def load_data():
                 return json.load(f)
         except Exception:
             pass
-    # Начальная пустая база, если файла ещё нет
     return {
         "🔥 Мета оружие": [],
         "🎯 Снайперские винтовки": [],
@@ -49,7 +49,7 @@ def save_data(data):
 builds = load_data()
 
 # =========================
-# ГЛАВНОЕ МЕНЮ
+# МЕНЮ
 # =========================
 def main_menu():
     keyboard = [
@@ -62,9 +62,6 @@ def main_menu():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# =========================
-# МЕНЮ КАТЕГОРИИ
-# =========================
 def category_menu():
     keyboard = [
         ["➕ Добавить сборку"],
@@ -74,22 +71,31 @@ def category_menu():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # =========================
-# КНОПКИ ЛАЙКОВ И КОММЕНТОВ
+# КНОПКИ (С ПРОВЕРКОЙ НА АДМИНА)
 # =========================
-def build_buttons(category, index, likes, comments):
+def build_buttons(category, index, likes, comments, user_id=None):
     keyboard = [
         [
             InlineKeyboardButton(f"❤️ {likes}", callback_data=f"like|{category}|{index}"),
             InlineKeyboardButton(f"💬 {comments}", callback_data=f"comment|{category}|{index}")
         ]
     ]
+    
+    # Если меню вызывает Тёма (админ), добавляем секретные кнопки управления
+    if user_id == ADMIN_ID:
+        keyboard.append([InlineKeyboardButton("🗑 Удалить сборку", callback_data=f"del_build|{category}|{index}")])
+        keyboard.append([
+            InlineKeyboardButton("✏️ Стереть описание", callback_data=f"del_desc|{category}|{index}"),
+            InlineKeyboardButton("🧹 Очистить комменты", callback_data=f"del_comms|{category}|{index}")
+        ])
+        
     return InlineKeyboardMarkup(keyboard)
 
 # =========================
-# START
+# СТАРТ
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()  # Полный сброс состояний юзера
+    context.user_data.clear()
     await update.message.reply_text(
         "🔥 Добро пожаловать в CoD Build Bot!\n\n"
         "Выбери раздел оружия для КБ:",
@@ -105,12 +111,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
     categories = list(builds.keys())
-    
     current_state = context.user_data.get("state")
+    user_id = update.message.from_user.id
 
-    # =========================
-    # ЖДЕМ ОПИСАНИЕ СБОРКИ
-    # =========================
     if current_state == "waiting_description":
         category = context.user_data.get("temp_category")
         photo = context.user_data.get("temp_photo")
@@ -131,8 +134,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(builds)
 
         index = len(builds[category]) - 1
-
-        # Сбрасываем состояния
         context.user_data["state"] = None
         context.user_data["temp_photo"] = None
 
@@ -140,18 +141,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo=photo,
             caption=f"🔥 *Новая сборка в разделе {category}*!\n\n{text}",
             parse_mode="Markdown",
-            reply_markup=build_buttons(category, index, 0, 0)
+            reply_markup=build_buttons(category, index, 0, 0, user_id)
         )
 
-        await update.message.reply_text(
-            "✅ Сборка успешно добавлена в базу!",
-            reply_markup=category_menu()
-        )
+        await update.message.reply_text("✅ Сборка успешно добавлена в базу!", reply_markup=category_menu())
         return
 
-    # =========================
-    # ЖДЕМ КОММЕНТАРИЙ
-    # =========================
     if current_state == "waiting_comment":
         category = context.user_data.get("comment_category")
         index = context.user_data.get("comment_index")
@@ -168,49 +163,28 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(builds)
 
         context.user_data["state"] = None
-
         await update.message.reply_text("✅ Комментарий добавлен!", reply_markup=category_menu())
         return
 
-    # =========================
-    # НАЗАД
-    # =========================
     if text == "⬅️ Назад":
         context.user_data["state"] = None
-        await update.message.reply_text(
-            "🏠 Главное меню. Выбирай пушки:",
-            reply_markup=main_menu()
-        )
+        await update.message.reply_text("🏠 Главное меню. Выбирай пушки:", reply_markup=main_menu())
         return
 
-    # =========================
-    # ВЫБОР КАТЕГОРИИ
-    # =========================
     if text in categories:
         context.user_data["temp_category"] = text
         context.user_data["state"] = None
-        await update.message.reply_text(
-            f"📂 Раздел: *{text}*\nВыбери действие ниже:",
-            parse_mode="Markdown",
-            reply_markup=category_menu()
-        )
+        await update.message.reply_text(f"📂 Раздел: *{text}*\nВыбери действие ниже:", parse_mode="Markdown", reply_markup=category_menu())
         return
 
-    # =========================
-    # ДОБАВИТЬ СБОРКУ
-    # =========================
     if text == "➕ Добавить сборку":
         if "temp_category" not in context.user_data:
             await update.message.reply_text("❌ Сначала выбери раздел в главном меню!")
             return
-
         context.user_data["state"] = "waiting_photo"
         await update.message.reply_text("📸 Отправь скриншот своей сборки модулей из игры:")
         return
 
-    # =========================
-    # ПОКАЗАТЬ СБОРКИ
-    # =========================
     if text == "📂 Посмотреть сборки":
         category = context.user_data.get("temp_category")
         if not category:
@@ -225,13 +199,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"📦 Загружаю кастомы для раздела: {category}...")
 
         for index, build in enumerate(category_builds):
-            keyboard = build_buttons(
-                category,
-                index,
-                build["likes"],
-                len(build["comments"])
-            )
-
+            keyboard = build_buttons(category, index, build["likes"], len(build["comments"]), user_id)
+            
             comments_text = ""
             if build["comments"]:
                 comments_text = "\n\n💬 *Комментарии игроков:*\n"
@@ -240,10 +209,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.message.reply_photo(
                 photo=build["photo"],
-                caption=(
-                    f"⚙️ *Описание модулей:*\n{build['description']}"
-                    f"{comments_text}"
-                ),
+                caption=f"⚙️ *Описание модулей:*\n{build['description']}{comments_text}",
                 parse_mode="Markdown",
                 reply_markup=keyboard
             )
@@ -253,10 +219,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ОБРАБОТКА ФОТО
 # =========================
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-
-    if context.user_data.get("state") != "waiting_photo":
+    if not update.message or context.user_data.get("state") != "waiting_photo":
         return
 
     if not update.message.photo:
@@ -274,8 +237,6 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-
     user_id = query.from_user.id
     parts = query.data.split("|")
 
@@ -283,17 +244,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     category = parts[1]
     index = int(parts[2])
 
+    # Защита от краша, если сборку уже удалили
     if category not in builds or index >= len(builds[category]):
+        await query.answer("❌ Сборка не найдена или уже удалена!", show_alert=True)
+        try:
+            await query.message.delete()
+        except:
+            pass
         return
 
     build = builds[category][index]
-
     if "liked_users" not in build:
         build["liked_users"] = []
 
-    # =========================
-    # ЛАЙК
-    # =========================
+    # === ЛАЙКИ ===
     if action == "like":
         if user_id in build["liked_users"]:
             build["likes"] -= 1
@@ -301,35 +265,68 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             build["likes"] += 1
             build["liked_users"].append(user_id)
-
         save_data(builds)
 
-        keyboard = build_buttons(
-            category,
-            index,
-            build["likes"],
-            len(build["comments"])
-        )
-
+        keyboard = build_buttons(category, index, build["likes"], len(build["comments"]), user_id)
         await query.edit_message_reply_markup(reply_markup=keyboard)
         return
 
-    # =========================
-    # КОММЕНТ
-    # =========================
+    # === КОММЕНТЫ ===
     if action == "comment":
         context.user_data["state"] = "waiting_comment"
         context.user_data["comment_category"] = category
         context.user_data["comment_index"] = index
+        await query.answer()
+        await context.bot.send_message(chat_id=user_id, text=f"💬 Напиши свой комментарий для этой сборки и отправь его мне:")
+        return
 
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=f"💬 Напиши свой комментарий для этой сборки и отправь его мне текстовым сообщением:"
+    # === ПАНЕЛЬ АДМИНИСТРАТОРА ===
+    if action in ["del_build", "del_desc", "del_comms"]:
+        if user_id != ADMIN_ID:
+            await query.answer("❌ Доступ запрещен! Только админ может это делать.", show_alert=True)
+            return
+
+        # 1. Удаление всей сборки
+        if action == "del_build":
+            del builds[category][index]
+            save_data(builds)
+            await query.message.delete()
+            await query.answer("✅ Сборка уничтожена!")
+            return
+
+        # 2. Удаление только описания
+        if action == "del_desc":
+            builds[category][index]["description"] = "🚫 _Описание было удалено администратором._"
+            save_data(builds)
+            
+        # 3. Полная очистка комментариев
+        if action == "del_comms":
+            builds[category][index]["comments"] = []
+            save_data(builds)
+
+        # Обновляем сообщение в чате после редактирования описания или комментов
+        comments_text = ""
+        if builds[category][index]["comments"]:
+            comments_text = "\n\n💬 *Комментарии игроков:*\n"
+            for comment in builds[category][index]["comments"][-5:]:
+                comments_text += f"\n• {comment}"
+
+        keyboard = build_buttons(category, index, build["likes"], len(build["comments"]), user_id)
+        
+        await query.edit_message_caption(
+            caption=f"⚙️ *Описание модулей:*\n{builds[category][index]['description']}{comments_text}",
+            parse_mode="Markdown",
+            reply_markup=keyboard
         )
+        
+        if action == "del_desc":
+            await query.answer("✅ Описание стерто!")
+        elif action == "del_comms":
+            await query.answer("✅ Комментарии очищены!")
         return
 
 # =========================
-# ЗАПУСК БОТА
+# ЗАПУСК
 # =========================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
