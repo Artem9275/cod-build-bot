@@ -19,9 +19,7 @@ from telegram.ext import (
 # =========================
 # НАСТРОЙКИ БОТА И АДМИНА
 # =========================
-import os
 TOKEN = os.environ.get("TOKEN")
-
 ADMIN_ID = 7083142762
 
 # =========================
@@ -340,4 +338,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+                              
