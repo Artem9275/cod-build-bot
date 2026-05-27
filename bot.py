@@ -149,7 +149,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Если тебе заходят наши меты для КБ и ты хочешь поддержать проект копеечкой на энергетик, "
             "можешь закинуть донат по реквизитам ниже. Любая поддержка помогает делать бота еще круче! 🚀\n\n"
             "💳 **Карта (Сбербанк/Тинькофф/и тд):**\n"
-            "`2202208162561493` (Тёма)\n\n"
+            "`2202 2081 6256 1493` (Тёма)\n\n"
             "Спасибо за поддержку, братишка! 🤝"
         )
         await update.message.reply_text(donate_msg, parse_mode="Markdown", reply_markup=main_menu())
@@ -338,4 +338,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
