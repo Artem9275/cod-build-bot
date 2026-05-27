@@ -19,7 +19,9 @@ from telegram.ext import (
 # =========================
 # НАСТРОЙКИ БОТА И АДМИНА
 # =========================
-TOKEN = "8912189908:AAHRiflwZb6ZCL1pOQXoXQ-aY3QF1YtIzsQ"
+import os
+TOKEN = os.environ.get("TOKEN")
+
 ADMIN_ID = 7083142762
 
 # =========================
