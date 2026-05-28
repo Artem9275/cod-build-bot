@@ -2,34 +2,28 @@ import os
 import json
 import random
 import requests
+import threading
+import uuid
+import re
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    ReplyKeyboardRemove
+    Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, 
+    InlineKeyboardButton, ReplyKeyboardRemove
 )
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-    CallbackQueryHandler
+    ApplicationBuilder, CommandHandler, MessageHandler, 
+    ContextTypes, filters, CallbackQueryHandler
 )
 
 # =========================
 # НАСТРОЙКИ
 # =========================
 TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = 7083142762
-ADMIN_IDS = [7083142762]
+ADMIN_IDS = [7083142762] # Твой ID админа
 DONAT_CARD = "2202208162561493"
+MAX_DESC_LEN = 500
 
-# =========================
-# НАСТРОЙКИ JSONBIN
-# =========================
 JSONBIN_KEY = "$2a$10$YToOVCHp5OUQNAy/9qZcE.NpzQ4.8Cxe0XD./KQeg7pU01mIzyDWG"
 JSONBIN_ID = "6a16c58ef47d5c455c3c7925"
 JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}"
@@ -37,573 +31,416 @@ JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}"
 def is_admin(user_id):
     return user_id in ADMIN_IDS
 
+def get_rank(likes):
+    if likes >= 150: return "🏆 Легенда"
+    if likes >= 50: return "💎 Мастер"
+    if likes >= 10: return "🔥 Профи"
+    return "🔰 Новичок"
+
+def normalize_weapon(name):
+    # Убираем пробелы, дефисы и делаем заглавными (АК-47 -> АК47)
+    return re.sub(r'[^a-zA-Zа-яА-Я0-9]', '', name).upper()
+
 # =========================
 # БАЗА ДАННЫХ
 # =========================
 def get_empty_db():
     return {
-        "🔥 Мета оружие": [],
-        "🎯 Снайперские винтовки": [],
-        "🔫 Штурмовые винтовки": [],
-        "⚡ Пистолеты-пулеметы": [],
-        "💣 Ручные пулеметы": [],
-        "💥 Дробовики": [],
-        "users": {},
-        "news": ["🎮 Добро пожаловать в CoD Build Bot!"],
-        "tips": ["🎯 Используй глушитель на штурмовых винтовках"]
+        "users": {}, # id: {name, likes_received, rank, favs:[]}
+        "builds": {"КБ": {}, "СИ": {}}, # mode -> category -> [items]
+        "sensa": {"КБ": [], "СИ": []},
+        "layouts": {"КБ": [], "СИ": []},
+        "tips": [],
+        "news": []
     }
 
 def load_data():
     headers = {"X-Master-Key": JSONBIN_KEY}
     try:
-        response = requests.get(JSONBIN_URL, headers=headers)
-        if response.status_code == 200:
-            return response.json().get("record", get_empty_db())
-        else:
-            print(f"Ошибка загрузки БД: {response.status_code}")
-    except Exception as e:
-        print(f"Ошибка соединения с JSONBin: {e}")
+        r = requests.get(JSONBIN_URL, headers=headers)
+        if r.status_code == 200:
+            data = r.json().get("record", get_empty_db())
+            # Инициализация новых ключей для старой базы
+            if "sensa" not in data: data["sensa"] = {"КБ": [], "СИ": []}
+            if "layouts" not in data: data["layouts"] = {"КБ": [], "СИ": []}
+            if "tips" not in data: data["tips"] = []
+            return data
+    except Exception as e: print(e)
     return get_empty_db()
 
 def save_data(data):
-    headers = {
-        "Content-Type": "application/json",
-        "X-Master-Key": JSONBIN_KEY
-    }
+    headers = {"Content-Type": "application/json", "X-Master-Key": JSONBIN_KEY}
+    try: requests.put(JSONBIN_URL, json=data, headers=headers)
+    except Exception as e: print(e)
+
+db = load_data()
+
+# =========================
+# УВЕДОМЛЕНИЯ АВТОРУ
+# =========================
+async def notify_author(context, author_id, text):
     try:
-        requests.put(JSONBIN_URL, json=data, headers=headers)
-    except Exception as e:
-        print(f"Ошибка сохранения в JSONBin: {e}")
-
-# Инициализация базы при запуске
-builds = load_data()
+        await context.bot.send_message(chat_id=author_id, text=text, parse_mode="Markdown")
+    except: pass
 
 # =========================
-# УВЕДОМЛЕНИЯ
+# КЛАВИАТУРЫ
 # =========================
-async def notify_author(context, author_id, message):
-    if author_id and author_id != ADMIN_ID:
-        try:
-            await context.bot.send_message(chat_id=author_id, text=message, parse_mode="Markdown")
-        except:
-            pass
-
-# =========================
-# МЕНЮ
-# =========================
-def main_menu(user_id=None):
-    keyboard = [
-        ["🔫 Оружие", "🏆 Топ сборок", "⭐ Избранное"],
-        ["👤 Профиль", "📊 Статистика", "🎲 Случайная сборка"],
-        ["📰 Новости меты", "🎯 Советы дня", "👥 Помощь"],
-        ["☕ Поддержать"]
+def main_menu(user_id):
+    kb = [
+        ["🔫 Сборки (Оружие)", "🎮 Раскладка", "⚙️ Сенса"],
+        ["🔥 Мета оружие", "🏆 Зал славы", "⭐ Избранное"],
+        ["👤 Профиль", "📰 Новости сезона", "💡 Советы"],
+        ["☕ Поддержать", "👥 Помощь"]
     ]
-    if is_admin(user_id):
-        keyboard.append(["👑 АДМИН-ПАНЕЛЬ"])
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    if is_admin(user_id): kb.append(["👑 АДМИН-ПАНЕЛЬ"])
+    return ReplyKeyboardMarkup(kb, resize_keyboard=True)
+
+def mode_menu():
+    return ReplyKeyboardMarkup([["🪂 КБ (Королевская битва)", "⚔️ СИ (Сетевая игра)"], ["🏠 В главное меню"]], resize_keyboard=True)
 
 def weapons_menu():
-    keyboard = [
-        ["🔥 Мета оружие", "🎯 Снайперские винтовки"],
-        ["🔫 Штурмовые винтовки", "⚡ Пистолеты-пулеметы"],
-        ["💣 Ручные пулеметы", "💥 Дробовики"],
-        ["⬅️ Назад в меню"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    return ReplyKeyboardMarkup([
+        ["🔫 Штурмовые", "🎯 Снайперские", "⚡ ПП"],
+        ["💣 Пулеметы", "💥 Дробовики", "🏹 Марксманские"],
+        ["🏠 В главное меню"]
+    ], resize_keyboard=True)
 
-def admin_panel_menu():
-    keyboard = [
-        ["📰 Управление новостями", "💡 Управление советами"],
-        ["📊 Статистика бота", "👥 Список пользователей"],
-        ["🗑 Управление сборками", "🔄 Очистить кэш"],
-        ["⬅️ Назад в меню"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-# =========================
-# КНОПКИ ДЛЯ СБОРОК
-# =========================
-def build_buttons(category, index, build, user_id=None):
-    likes = build.get("likes", 0)
-    dislikes = build.get("dislikes", 0)
-    
-    keyboard = [
-        [
-            InlineKeyboardButton(f"👍 {likes}", callback_data=f"like|{category}|{index}"),
-            InlineKeyboardButton(f"👎 {dislikes}", callback_data=f"dislike|{category}|{index}"),
-            InlineKeyboardButton(f"💬 Комментарии", callback_data=f"comments|{category}|{index}")
-        ]
-    ]
-    
-    if is_admin(user_id):
-        keyboard.append([InlineKeyboardButton("🗑 Удалить", callback_data=f"del_build|{category}|{index}")])
-    
-    return InlineKeyboardMarkup(keyboard)
+def item_buttons(item_id, item_type, likes, dislikes, author_id, user_id):
+    kb = [[
+        InlineKeyboardButton(f"♥️ {likes}", callback_data=f"vote|{item_type}|{item_id}|like"),
+        InlineKeyboardButton(f"👎 {dislikes}", callback_data=f"vote|{item_type}|{item_id}|dislike"),
+        InlineKeyboardButton("⭐ В избранное", callback_data=f"fav|{item_type}|{item_id}")
+    ]]
+    if is_admin(user_id) or str(user_id) == str(author_id):
+        kb.append([InlineKeyboardButton("🗑 Удалить", callback_data=f"del|{item_type}|{item_id}")])
+    return InlineKeyboardMarkup(kb)
 
 # =========================
 # ОСНОВНЫЕ ФУНКЦИИ
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    user_id = str(user.id)
-    
-    if "users" not in builds:
-        builds["users"] = {}
-        
-    if user_id not in builds["users"]:
-        builds["users"][user_id] = {"name": user.first_name, "join_date": datetime.now().isoformat()}
-        save_data(builds)
-    
-    await update.message.reply_text(
-        f"🔥 *Добро пожаловать, {user.first_name}!*\n\nВыбери действие:",
-        parse_mode="Markdown",
-        reply_markup=main_menu(user.id)
-    )
-
-async def show_builds_in_category(update: Update, context: ContextTypes.DEFAULT_TYPE, category):
-    builds_list = builds.get(category, [])
-    user_id = update.message.from_user.id
-    
-    if not builds_list:
-        keyboard = [[InlineKeyboardButton("➕ Добавить первую сборку", callback_data=f"add_build|{category}")]]
-        await update.message.reply_text(
-            f"😢 В разделе *{category}* пока нет сборок.\n\nСтань первым!",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-    
-    await update.message.reply_text(f"📂 *{category}* - {len(builds_list)} сборок", parse_mode="Markdown")
-    
-    for idx, build in enumerate(builds_list):
-        text = f"⚙️ {build['description']}\n\n❤️ {build.get('likes', 0)} | 👎 {build.get('dislikes', 0)}"
-        keyboard = build_buttons(category, idx, build, user_id)
-        await update.message.reply_photo(
-            photo=build["photo"],
-            caption=text,
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
-
-async def add_build_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    category = query.data.split("|")[1]
-    context.user_data["temp_category"] = category
-    context.user_data["state"] = "waiting_photo"
-    await query.message.reply_text(
-        "📸 Отправь скриншот своей сборки:",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    await query.answer()
-
-async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("state") != "waiting_photo":
-        await update.message.reply_text("❌ Сначала выбери категорию и нажми '➕ Добавить сборку'!")
-        return
-    
-    context.user_data["temp_photo"] = update.message.photo[-1].file_id
-    context.user_data["state"] = "waiting_description"
-    await update.message.reply_text("✍️ Теперь напиши описание модулей:")
-
-async def save_build_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user_name = update.message.from_user.first_name
-    category = context.user_data.get("temp_category")
-    photo = context.user_data.get("temp_photo")
-    description = update.message.text
-    
-    if not category or not photo:
-        await update.message.reply_text("❌ Ошибка! Попробуй заново.")
-        context.user_data.clear()
-        return
-    
-    new_build = {
-        "photo": photo,
-        "description": description,
-        "likes": 0,
-        "dislikes": 0,
-        "liked_users": [],
-        "disliked_users": [],
-        "comments": [],
-        "author_id": user_id,
-        "author_name": user_name,
-        "created_at": datetime.now().isoformat()
-    }
-    
-    if category not in builds:
-        builds[category] = []
-        
-    builds[category].append(new_build)
-    save_data(builds)
+    uid = str(user.id)
+    if uid not in db["users"]:
+        db["users"][uid] = {"name": user.first_name, "likes_received": 0, "favs": []}
+        save_data(db)
     context.user_data.clear()
-    
-    await update.message.reply_text(
-        f"✅ Сборка добавлена!",
-        parse_mode="Markdown",
-        reply_markup=main_menu(user_id)
-    )
+    await update.message.reply_text(f"Салют, {user.first_name}! 🪂\nГотов разваливать кабины? Выбирай раздел:", reply_markup=main_menu(uid))
 
-async def show_comments(update: Update, context: ContextTypes.DEFAULT_TYPE, category, index):
-    query = update.callback_query
-    build = builds[category][index]
-    comms = build.get("comments", [])
-    
-    if not comms:
-        text = "💬 *Комментариев пока нет*\n\nНапиши первый!"
-    else:
-        text = "💬 *Комментарии:*\n━━━━━━━━━━━━━━━\n\n"
-        for i, c in enumerate(comms[-10:], 1):
-            text += f"{i}. {c}\n\n"
-    
-    keyboard = [
-        [InlineKeyboardButton("✍️ Написать", callback_data=f"write_comment|{category}|{index}")],
-        [InlineKeyboardButton("🔄 Обновить", callback_data=f"refresh_comments|{category}|{index}")],
-        [InlineKeyboardButton("❌ Закрыть", callback_data="close_msg")]
-    ]
-    
-    await query.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-    await query.answer()
+# === ДОБАВЛЕНИЕ СБОРКИ ===
+async def start_add_build(update: Update, context: ContextTypes.DEFAULT_TYPE, mode, category):
+    context.user_data.update({"state": "build_name", "mode": mode, "category": category})
+    await update.message.reply_text(f"Добавляем сборку в *{category}* ({mode}).\nНапиши точное название оружия (например: AK-47, DLQ33):", parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
 
-async def write_comment_start(update: Update, context: ContextTypes.DEFAULT_TYPE, category, index):
-    query = update.callback_query
-    context.user_data["comment_data"] = {"category": category, "index": index}
-    context.user_data["state"] = "waiting_comment"
-    await query.message.reply_text("💬 Напиши свой комментарий:", reply_markup=ReplyKeyboardRemove())
-    await query.answer()
-
-async def save_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user_name = update.message.from_user.first_name
-    comment_text = update.message.text
-    
-    comment_data = context.user_data.get("comment_data")
-    if not comment_data:
-        context.user_data.clear()
-        return
-    
-    category = comment_data["category"]
-    index = comment_data["index"]
-    
-    build = builds[category][index]
-    author_id = build.get("author_id")
-    
-    full_comment = f"*{user_name}*: {comment_text}"
-    builds[category][index]["comments"].append(full_comment)
-    save_data(builds)
-    
-    context.user_data.clear()
-    await update.message.reply_text("✅ Комментарий добавлен!", reply_markup=main_menu(user_id))
-    
-    if author_id and author_id != user_id:
-        await notify_author(context, author_id, f"💬 *{user_name}* оставил комментарий под твоей сборкой!\n\n💬 {comment_text[:100]}...")
-
-async def show_top_builds(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    all_builds = []
-    for category, builds_list in builds.items():
-        if category in ["users", "news", "tips"]:
-            continue
-        for build in builds_list:
-            all_builds.append((category, build, build.get("likes", 0)))
-    all_builds.sort(key=lambda x: x[2], reverse=True)
-    top5 = all_builds[:5]
-    
-    if not top5:
-        await update.message.reply_text("😢 Пока нет сборок")
-        return
-    
-    text = "🏆 *ТОП-5 СБОРОК*\n━━━━━━━━━━━━━━━\n\n"
-    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-    for i, (category, build, likes) in enumerate(top5):
-        text += f"{medals[i]} *{category}*\n📝 {build['description'][:80]}...\n❤️ {likes}\n\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def random_build(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    all_builds = []
-    for category, builds_list in builds.items():
-        if category in ["users", "news", "tips"]:
-            continue
-        for build in builds_list:
-            all_builds.append((category, build))
-    
-    if not all_builds:
-        await update.message.reply_text("😢 Пока нет сборок")
-        return
-    
-    category, build = random.choice(all_builds)
-    await update.message.reply_text(
-        f"🎲 *СЛУЧАЙНАЯ СБОРКА*\n━━━━━━━━━━━━━━━\n*{category}*\n\n⚙️ {build['description']}\n\n❤️ {build.get('likes', 0)} лайков",
-        parse_mode="Markdown"
-    )
-
-async def show_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    news_list = builds.get("news", [])
-    text = "📰 *НОВОСТИ*\n━━━━━━━━━━━━━━━\n\n"
-    for i, news in enumerate(news_list[-5:], 1):
-        text += f"{i}. {news}\n\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def show_tips(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tips_list = builds.get("tips", [])
-    tip = random.choice(tips_list) if tips_list else "Скоро добавим советы!"
-    await update.message.reply_text(f"🎯 *СОВЕТ ДНЯ*\n━━━━━━━━━━━━━━━\n\n{tip}", parse_mode="Markdown")
-
-async def help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""
-🤖 *ПОМОЩЬ*
-━━━━━━━━━━━━━━━
-
-📌 *КАК ДОБАВИТЬ СБОРКУ:*
-1️⃣ Нажми 🔫 Оружие
-2️⃣ Выбери категорию
-3️⃣ Нажми ➕ Добавить сборку
-4️⃣ Отправь скриншот
-5️⃣ Напиши описание
-
-✨ *ЧТО МОЖНО ДЕЛАТЬ:*
-• 👍/👎 - оценивать сборки
-• 💬 - комментировать
-• 🔔 - уведомления (приходят автоматически)
-    """, parse_mode="Markdown")
-
-async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    user_name = update.message.from_user.first_name
-    
-    user_builds = 0
-    for cat in builds:
-        if cat not in ["users", "news", "tips"]:
-            for b in builds[cat]:
-                if str(b.get("author_id")) == user_id:
-                    user_builds += 1
-    
-    await update.message.reply_text(
-        f"👤 *ПРОФИЛЬ*\n━━━━━━━━━━━━━━━\n\n📝 {user_name}\n📦 Сборок: {user_builds}",
-        parse_mode="Markdown"
-    )
-
-async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    total_builds = sum(len(builds[cat]) for cat in builds if cat not in ["users", "news", "tips"])
-    total_users = len(builds.get("users", {}))
-    await update.message.reply_text(
-        f"📊 *СТАТИСТИКА*\n━━━━━━━━━━━━━━━\n\n📦 Сборок: {total_builds}\n👥 Пользователей: {total_users}",
-        parse_mode="Markdown"
-    )
-
-# =========================
-# ОБРАБОТЧИК СООБЩЕНИЙ
-# =========================
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    
+async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    user_id = update.message.from_user.id
-    categories = ["🔥 Мета оружие", "🎯 Снайперские винтовки", "🔫 Штурмовые винтовки", 
-                  "⚡ Пистолеты-пулеметы", "💣 Ручные пулеметы", "💥 Дробовики"]
-    
-    if context.user_data.get("state") == "waiting_description":
-        await save_build_description(update, context)
-        return
-    
-    if context.user_data.get("state") == "waiting_comment":
-        await save_comment(update, context)
-        return
-    
-    if text == "🔫 Оружие":
-        await update.message.reply_text("🔫 *Выбери категорию:*", parse_mode="Markdown", reply_markup=weapons_menu())
-        return
-    
-    if text in categories:
-        context.user_data["temp_category"] = text
-        await show_builds_in_category(update, context, text)
-        return
-    
-    if text == "⬅️ Назад в меню":
-        await update.message.reply_text("🏠 *Главное меню*", parse_mode="Markdown", reply_markup=main_menu(user_id))
-        return
-    
-    if text == "🏆 Топ сборок":
-        await show_top_builds(update, context)
-        return
-    if text == "🎲 Случайная сборка":
-        await random_build(update, context)
-        return
-    if text == "📰 Новости меты":
-        await show_news(update, context)
-        return
-    if text == "🎯 Советы дня":
-        await show_tips(update, context)
-        return
-    if text == "👥 Помощь":
-        await help_menu(update, context)
-        return
-    if text == "👤 Профиль":
-        await show_profile(update, context)
-        return
-    if text == "📊 Статистика":
-        await show_stats(update, context)
-        return
-    if text == "⭐ Избранное":
-        await update.message.reply_text("⭐ *ИЗБРАННОЕ*\n\nСкоро здесь будут твои любимые сборки!", parse_mode="Markdown")
-        return
-    if text == "☕ Поддержать":
-        await update.message.reply_text(f"☕ *ПОДДЕРЖАТЬ*\n━━━━━━━━━━━━━━━\n\n💳 Сбербанк: `{DONAT_CARD}`", parse_mode="Markdown")
-        return
-    
-    if text == "👑 АДМИН-ПАНЕЛЬ" and is_admin(user_id):
-        await update.message.reply_text("👑 *АДМИН-ПАНЕЛЬ*", parse_mode="Markdown", reply_markup=admin_panel_menu())
-        return
-    
-    await update.message.reply_text("🔫 Выбери действие в меню!", reply_markup=main_menu(user_id))
+    state = context.user_data.get("state")
+    uid = str(update.message.from_user.id)
+    uname = update.message.from_user.first_name
 
-# =========================
-# ОБРАБОТЧИК КНОПОК
-# =========================
+    if state == "build_name":
+        context.user_data["w_name"] = text
+        context.user_data["w_tag"] = normalize_weapon(text)
+        context.user_data["state"] = "build_photo"
+        await update.message.reply_text("📸 Отлично! Теперь отправь скриншот сборки модулей:")
+        return
+
+    if state == "build_desc":
+        if len(text) > MAX_DESC_LEN:
+            await update.message.reply_text(f"❌ Текст слишком длинный (макс {MAX_DESC_LEN} символов). Сократи и отправь снова:")
+            return
+        
+        mode, cat = context.user_data["mode"], context.user_data["category"]
+        build = {
+            "id": str(uuid.uuid4())[:8], "type": "build", "mode": mode, "category": cat,
+            "weapon": context.user_data["w_name"], "tag": context.user_data["w_tag"],
+            "photo": context.user_data["photo"], "desc": text,
+            "author_id": uid, "author_name": uname, "likes": 0, "dislikes": 0, "voters": {}
+        }
+        if cat not in db["builds"][mode]: db["builds"][mode][cat] = []
+        db["builds"][mode][cat].append(build)
+        save_data(db)
+        context.user_data.clear()
+        await update.message.reply_text("✅ Сборка успешно загружена в базу!", reply_markup=main_menu(uid))
+        return
+
+    # === ОБРАБОТКА ДЛЯ СЕНСЫ И РАСКЛАДКИ ===
+    if state == "sens_code":
+        context.user_data["code"] = text
+        context.user_data["state"] = "sens_desc"
+        kb = ReplyKeyboardMarkup([["⏭ Пропустить"]], resize_keyboard=True)
+        await update.message.reply_text("✍️ Добавь описание (макс 500 симв.) или нажми 'Пропустить':", reply_markup=kb)
+        return
+
+    if state == "sens_desc":
+        if text != "⏭ Пропустить" and len(text) > MAX_DESC_LEN:
+            await update.message.reply_text("❌ Слишком длинное описание. Сократи:")
+            return
+        
+        mode = context.user_data["mode"]
+        item = {
+            "id": str(uuid.uuid4())[:8], "type": "sensa", "mode": mode,
+            "os": context.user_data["os"], "device": context.user_data["dev"],
+            "gyro": context.user_data["gyro"], "fingers": context.user_data["fingers"],
+            "code": context.user_data["code"], "desc": "" if text == "⏭ Пропустить" else text,
+            "author_id": uid, "author_name": uname, "likes": 0, "dislikes": 0, "voters": {}
+        }
+        db["sensa"][mode].append(item)
+        save_data(db)
+        context.user_data.clear()
+        await update.message.reply_text("✅ Код сенсы успешно добавлен!", reply_markup=main_menu(uid))
+        return
+
+    if state == "layout_code":
+        context.user_data["code"] = text
+        context.user_data["state"] = "layout_desc"
+        kb = ReplyKeyboardMarkup([["⏭ Пропустить"]], resize_keyboard=True)
+        await update.message.reply_text("✍️ Добавь описание (макс 500 симв.) или нажми 'Пропустить':", reply_markup=kb)
+        return
+
+    if state == "layout_desc":
+        if text != "⏭ Пропустить" and len(text) > MAX_DESC_LEN:
+            await update.message.reply_text("❌ Слишком длинное описание:")
+            return
+        mode = context.user_data["mode"]
+        item = {
+            "id": str(uuid.uuid4())[:8], "type": "layout", "mode": mode,
+            "photo": context.user_data["photo"], "code": context.user_data["code"],
+            "desc": "" if text == "⏭ Пропустить" else text,
+            "author_id": uid, "author_name": uname, "likes": 0, "dislikes": 0, "voters": {}
+        }
+        db["layouts"][mode].append(item)
+        save_data(db)
+        context.user_data.clear()
+        await update.message.reply_text("✅ Раскладка успешно добавлена!", reply_markup=main_menu(uid))
+        return
+
+async def process_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = context.user_data.get("state")
+    if state == "build_photo":
+        context.user_data["photo"] = update.message.photo[-1].file_id
+        context.user_data["state"] = "build_desc"
+        await update.message.reply_text("✍️ Напиши описание сборки модулей (макс 500 символов):")
+    elif state == "layout_photo":
+        context.user_data["photo"] = update.message.photo[-1].file_id
+        context.user_data["state"] = "layout_code"
+        await update.message.reply_text("🔢 Теперь отправь код раскладки (например: 7326154...):")
+
+# === МЕНЮ И НАВИГАЦИЯ ===
+async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    uid = str(update.message.from_user.id)
+    
+    if context.user_data.get("state"):
+        await process_text_inputs(update, context)
+        return
+
+    if text in ["🏠 В главное меню", "/start"]:
+        context.user_data.clear()
+        await update.message.reply_text("🏠 Главное меню", reply_markup=main_menu(uid))
+        return
+        
+    if text == "🔫 Сборки (Оружие)":
+        context.user_data["section"] = "builds"
+        await update.message.reply_text("Выбери режим:", reply_markup=mode_menu())
+        return
+    if text == "⚙️ Сенса":
+        context.user_data["section"] = "sensa"
+        await update.message.reply_text("Выбери режим для сенсы:", reply_markup=mode_menu())
+        return
+    if text == "🎮 Раскладка":
+        context.user_data["section"] = "layouts"
+        await update.message.reply_text("Выбери режим для раскладки:", reply_markup=mode_menu())
+        return
+
+    if text in ["🪂 КБ (Королевская битва)", "⚔️ СИ (Сетевая игра)"]:
+        mode = "КБ" if "КБ" in text else "СИ"
+        sec = context.user_data.get("section")
+        if sec == "builds":
+            context.user_data["mode"] = mode
+            await update.message.reply_text(f"Оружие для {mode}. Выбери класс:", reply_markup=weapons_menu())
+        elif sec == "sensa":
+            # Запуск конструктора сенсы
+            context.user_data.update({"state": "sens_os", "mode": mode})
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 Android", callback_data="sens|os|Android"), InlineKeyboardButton("🍏 iOS", callback_data="sens|os|iOS")]])
+            await update.message.reply_text(f"⚙️ Сенса ({mode})\nВыбери платформу:", reply_markup=kb)
+        elif sec == "layouts":
+            context.user_data.update({"state": "layout_photo", "mode": mode})
+            await update.message.reply_text(f"🎮 Раскладка ({mode})\nОтправь скриншот твоего HUD (экрана):", reply_markup=ReplyKeyboardRemove())
+        return
+
+    categories = ["🔫 Штурмовые", "🎯 Снайперские", "⚡ ПП", "💣 Пулеметы", "💥 Дробовики", "🏹 Марксманские"]
+    if text in categories:
+        mode = context.user_data.get("mode", "КБ")
+        cat_name = text.split(" ")[1] # Берем слово без смайлика
+        builds_list = db["builds"][mode].get(cat_name, [])
+        
+        btn = [[InlineKeyboardButton("➕ Добавить сборку", callback_data=f"addb|{mode}|{cat_name}")]]
+        if not builds_list:
+            await update.message.reply_text(f"В категории {text} ({mode}) пока пусто.", reply_markup=InlineKeyboardMarkup(btn))
+            return
+            
+        await update.message.reply_text(f"📂 *{text} ({mode})*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btn))
+        for b in builds_list[-10:]: # Показываем 10 последних
+            kb = item_buttons(b["id"], "builds", b["likes"], b["dislikes"], b["author_id"], uid)
+            cap = f"🔫 *{b['weapon']}*\n📝 {b['desc']}\n👤 Автор: {b['author_name']}"
+            await update.message.reply_photo(photo=b["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
+        return
+
+    if text == "🔥 Мета оружие":
+        await show_auto_meta(update, context)
+        return
+        
+    if text == "👤 Профиль":
+        u_info = db["users"].get(uid, {})
+        likes = u_info.get("likes_received", 0)
+        rank = get_rank(likes)
+        await update.message.reply_text(f"👤 *ТВОЙ ПРОФИЛЬ*\n━━━━━━━━━━━━━━━\nИмя: {u_info.get('name')}\nРанг: {rank}\nСобрано ♥️: {likes}", parse_mode="Markdown")
+        return
+
+# === АВТО-МЕТА (ТОП 3) ===
+async def show_auto_meta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.from_user.id
+    for mode in ["КБ", "СИ"]:
+        all_builds = []
+        for cat in db["builds"][mode]:
+            all_builds.extend(db["builds"][mode][cat])
+        
+        top3 = sorted(all_builds, key=lambda x: x["likes"], reverse=True)[:3]
+        if not top3: continue
+        
+        await update.message.reply_text(f"🔥 *АБСОЛЮТНАЯ МЕТА - {mode}*", parse_mode="Markdown")
+        medals = ["🥇", "🥈", "🥉"]
+        for i, b in enumerate(top3):
+            kb = item_buttons(b["id"], "builds", b["likes"], b["dislikes"], b["author_id"], uid)
+            cap = f"{medals[i]} *{b['weapon']}* ({b['category']})\n📝 {b['desc']}\n👤 Автор: {b['author_name']}"
+            await update.message.reply_photo(photo=b["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
+
+# === ОБРАБОТКА КНОПОК ===
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_id = query.from_user.id
-    user_name = query.from_user.first_name
-    data = query.data
-    
-    if data == "close_msg":
-        try:
+    uid = str(query.from_user.id)
+    uname = query.from_user.first_name
+    data = query.data.split("|")
+
+    if data[0] == "addb": # addb|mode|category
+        await start_add_build(update, context, data[1], data[2])
+        await query.answer()
+        return
+
+    # Конструктор сенсы
+    if data[0] == "sens":
+        step, val = data[1], data[2]
+        context.user_data[step] = val
+        if step == "os":
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("📱 Телефон", callback_data="sens|dev|Телефон"), InlineKeyboardButton("🖥 Планшет", callback_data="sens|dev|Планшет")]])
+            await query.edit_message_text("Выбери устройство:", reply_markup=kb)
+        elif step == "dev":
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Включен", callback_data="sens|gyro|С гироскопом"), InlineKeyboardButton("Выключен", callback_data="sens|gyro|Без гироскопа")]])
+            await query.edit_message_text("Гироскоп:", reply_markup=kb)
+        elif step == "gyro":
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{i} 🤞", callback_data=f"sens|fingers|{i} пальцев") for i in range(2, 7)]])
+            await query.edit_message_text("Сколько пальцев хват?", reply_markup=kb)
+        elif step == "fingers":
+            context.user_data["state"] = "sens_code"
             await query.message.delete()
-        except:
-            pass
+            await query.message.reply_text("🔢 Отлично! Отправь цифровой код сенсы:")
         return
-    
-    # Добавление сборки
-    if data.startswith("add_build|"):
-        await add_build_start(update, context)
-        return
-    
-    # Комментарии
-    if data.startswith("comments|"):
-        parts = data.split("|")
-        category, index = parts[1], int(parts[2])
-        await show_comments(update, context, category, index)
-        return
-    
-    if data.startswith("refresh_comments|"):
-        parts = data.split("|")
-        category, index = parts[1], int(parts[2])
-        await show_comments(update, context, category, index)
-        return
-    
-    if data.startswith("write_comment|"):
-        parts = data.split("|")
-        category, index = parts[1], int(parts[2])
-        await write_comment_start(update, context, category, index)
-        return
-    
-    # Лайк
-    if data.startswith("like|"):
-        parts = data.split("|")
-        category, index = parts[1], int(parts[2])
-        build = builds[category][index]
-        author_id = build.get("author_id")
+
+    # Система лайков
+    if data[0] == "vote":
+        item_type, item_id, vote_type = data[1], data[2], data[3]
+        # Поиск айтема
+        item = None
+        for mode in db[item_type]:
+            if isinstance(db[item_type][mode], dict):
+                for cat in db[item_type][mode]:
+                    for i in db[item_type][mode][cat]:
+                        if i["id"] == item_id: item = i
+            else:
+                for i in db[item_type][mode]:
+                    if i["id"] == item_id: item = i
         
-        if user_id == author_id:
-            await query.answer("❌ Нельзя лайкать свою сборку!", show_alert=True)
+        if not item:
+            await query.answer("Пост не найден или удален", show_alert=True)
             return
-        
-        if "liked_users" not in build:
-            build["liked_users"] = []
-        if "disliked_users" not in build:
-            build["disliked_users"] = []
-        
-        if user_id in build["disliked_users"]:
-            build["disliked_users"].remove(user_id)
-            build["dislikes"] = build.get("dislikes", 0) - 1
-        
-        if user_id in build["liked_users"]:
-            build["liked_users"].remove(user_id)
-            build["likes"] = build.get("likes", 0) - 1
-            action = "🔴 Убрал лайк"
-            notif = None
-        else:
-            build["liked_users"].append(user_id)
-            build["likes"] = build.get("likes", 0) + 1
-            action = "👍 Поставил лайк"
-            notif = f"👍 *{user_name}* лайкнул твою сборку!"
-        
-        save_data(builds)
-        if notif and author_id and author_id != user_id:
-            await notify_author(context, author_id, notif)
-        
-        keyboard = build_buttons(category, index, build, user_id)
-        await query.edit_message_reply_markup(reply_markup=keyboard)
-        await query.answer(action)
-        return
-    
-    # Дизлайк
-    if data.startswith("dislike|"):
-        parts = data.split("|")
-        category, index = parts[1], int(parts[2])
-        build = builds[category][index]
-        author_id = build.get("author_id")
-        
-        if user_id == author_id:
-            await query.answer("❌ Нельзя дизлайкать свою сборку!", show_alert=True)
+
+        auth_id = str(item["author_id"])
+        if uid == auth_id:
+            await query.answer("❌ Свой контент оценивать нельзя!", show_alert=True)
             return
-        
-        if "disliked_users" not in build:
-            build["disliked_users"] = []
-        if "liked_users" not in build:
-            build["liked_users"] = []
-        
-        if user_id in build["liked_users"]:
-            build["liked_users"].remove(user_id)
-            build["likes"] = build.get("likes", 0) - 1
-        
-        if user_id in build["disliked_users"]:
-            build["disliked_users"].remove(user_id)
-            build["dislikes"] = build.get("dislikes", 0) - 1
-            action = "🟢 Убрал дизлайк"
-            notif = None
+
+        current_vote = item["voters"].get(uid)
+        notif = ""
+        if current_vote == vote_type:
+            # Убираем оценку
+            item["voters"].pop(uid)
+            item[vote_type + "s"] -= 1
+            if vote_type == "like" and auth_id in db["users"]: db["users"][auth_id]["likes_received"] -= 1
         else:
-            build["disliked_users"].append(user_id)
-            build["dislikes"] = build.get("dislikes", 0) + 1
-            action = "👎 Поставил дизлайк"
-            notif = f"👎 *{user_name}* дизлайкнул твою сборку!"
-        
-        save_data(builds)
-        if notif and author_id and author_id != user_id:
-            await notify_author(context, author_id, notif)
-        
-        keyboard = build_buttons(category, index, build, user_id)
-        await query.edit_message_reply_markup(reply_markup=keyboard)
-        await query.answer(action)
-        return
-    
-    # Удаление сборки (админ)
-    if data.startswith("del_build|") and is_admin(user_id):
-        parts = data.split("|")
-        category, index = parts[1], int(parts[2])
-        del builds[category][index]
-        save_data(builds)
+            # Ставим оценку (убирая противоположную если была)
+            if current_vote:
+                item[current_vote + "s"] -= 1
+                if current_vote == "like" and auth_id in db["users"]: db["users"][auth_id]["likes_received"] -= 1
+            
+            item["voters"][uid] = vote_type
+            item[vote_type + "s"] += 1
+            if vote_type == "like": 
+                if auth_id in db["users"]: db["users"][auth_id]["likes_received"] += 1
+                notif = f"♥️ *{uname}* оценил твой пост!"
+            else:
+                notif = f"👎 *{uname}* поставил дизлайк."
+
+        save_data(db)
+        kb = item_buttons(item_id, item_type, item["likes"], item["dislikes"], auth_id, uid)
+        await query.edit_message_reply_markup(reply_markup=kb)
+        if notif: await notify_author(context, auth_id, notif)
+        await query.answer("Голос учтен!")
+
+    if data[0] == "del":
+        item_type, item_id = data[1], data[2]
+        # Логика удаления (упрощенная для примера, ищет и удаляет)
+        for mode in db[item_type]:
+            if isinstance(db[item_type][mode], dict):
+                for cat in db[item_type][mode]:
+                    db[item_type][mode][cat] = [i for i in db[item_type][mode][cat] if i["id"] != item_id]
+            else:
+                db[item_type][mode] = [i for i in db[item_type][mode] if i["id"] != item_id]
+        save_data(db)
         await query.message.delete()
-        await query.answer("✅ Сборка удалена!")
-        return
+        await query.answer("Удалено!")
+
+# =========================
+# ЗАГЛУШКА ДЛЯ RENDER
+# =========================
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write(b"CoDM Bot Active!")
+
+def keep_alive():
+    port = int(os.environ.get("PORT", 8080))
+    HTTPServer(('0.0.0.0', port), DummyHandler).serve_forever()
 
 # =========================
 # ЗАПУСК
 # =========================
 def main():
     if not TOKEN:
-        print("❌ ОШИБКА: Токен не найден! Проверь переменные окружения (BOT_TOKEN).")
+        print("❌ ОШИБКА: Токен не найден!")
         return
 
-    print("🚀 Запуск бота...")
+    threading.Thread(target=keep_alive, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Регистрация всех обработчиков
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_handler(MessageHandler(filters.PHOTO, process_photos))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # drop_pending_updates=True помогает избежать старой ошибки telegram.error.Conflict
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
