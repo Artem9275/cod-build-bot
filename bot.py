@@ -103,7 +103,6 @@ def weapons_menu():
     ], resize_keyboard=True)
 
 def item_buttons(item_id, item_type, likes, dislikes, author_id, user_id):
-    # Умная кнопка Избранного
     is_fav = f"{item_type}|{item_id}" in db["users"].get(str(user_id), {}).get("favs", [])
     fav_text = "🌟 Убрать из избранного" if is_fav else "⭐ В избранное"
     
@@ -285,6 +284,11 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "🔍 Поиск":
         context.user_data["state"] = "search"
         await update.message.reply_text("🔍 Введи точное название оружия (например, AK47):", reply_markup=cancel_menu())
+        return
+
+    # ВЕРНУЛИ ВЫЗОВ ФУНКЦИИ МЕТЫ!
+    if text == "🔥 Мета оружие":
+        await show_auto_meta(update, context)
         return
 
     if text in ["🪂 КБ (Королевская битва)", "⚔️ СИ (Сетевая игра)"]:
@@ -494,7 +498,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         save_data(db)
         
-        # Обновляем кнопку под постом, чтобы текст изменился
         item = None
         if item_type == "builds":
             for m in db["builds"]:
