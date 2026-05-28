@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # НАСТРОЙКИ
 # =========================
 TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_IDS = [7083142762]
+ADMIN_IDS = ["7083142762"] # ИСПРАВЛЕНО: ID теперь в виде строки
 DONAT_CARD = "2202208162561493"
 MAX_DESC_LEN = 500
 
@@ -36,7 +36,7 @@ JSONBIN_ID = "6a16c58ef47d5c455c3c7925"
 JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}"
 
 def is_admin(user_id):
-    return user_id in ADMIN_IDS
+    return str(user_id) in ADMIN_IDS
 
 def get_rank(likes):
     if likes >= 150: return "🏆 Легенда"
@@ -116,7 +116,7 @@ def item_buttons(item_id, item_type, likes, dislikes, author_id, user_id):
 # =========================
 async def start_add_build(update: Update, context: ContextTypes.DEFAULT_TYPE, mode, category):
     context.user_data.update({"state": "build_photo", "mode": mode, "category": category})
-    await update.effective_message.reply_text(
+    msg = await update.effective_message.reply_text(
         f"📸 *Шаг 1/3*\nДобавляем сборку в *{category}* ({mode}).\n\nДля начала отправь скриншот твоей сборки модулей:", 
         parse_mode="Markdown", reply_markup=cancel_menu()
     )
@@ -256,7 +256,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     uid = str(update.message.from_user.id)
     
-    # КНОПКА ОТМЕНЫ - Работает железно из любого состояния
     if text in ["❌ Отмена", "🏠 В главное меню", "/start"]:
         context.user_data.clear()
         if uid not in db["users"]:
@@ -297,7 +296,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("👀 Смотреть сенсу", callback_data=f"view|sensa|{mode}")], [InlineKeyboardButton("➕ Добавить свою", callback_data=f"add|sensa|{mode}")]])
             await update.message.reply_text(f"⚙️ Сенса ({mode})", reply_markup=kb)
         elif sec == "layouts":
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("👀 Смотреть раскладки", callback_data=f"view|layout|{mode}")], [InlineKeyboardButton("➕ Добавить свою", callback_data=f"add|layout|{mode}")]])
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("👀 Смотреть раскладки", callback_data=f"view|layouts|{mode}")], [InlineKeyboardButton("➕ Добавить свою", callback_data=f"add|layouts|{mode}")]])
             await update.message.reply_text(f"🎮 Раскладка ({mode})", reply_markup=kb)
         return
 
@@ -312,11 +311,15 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"В категории {text} ({mode}) пока пусто.", reply_markup=InlineKeyboardMarkup(btn))
             return
             
-        await update.message.reply_text(f"📂 *{text} ({mode})*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btn))
+        await update.message.reply_text(f"📂 *{text} ({mode})*", parse_mode="Markdown")
+        
         for b in builds_list[-10:]: 
             kb = item_buttons(b["id"], "builds", b["likes"], b["dislikes"], b["author_id"], uid)
             cap = f"🔫 *{b['weapon']}*\n📝 {b['desc']}\n👤 Автор: {b['author_name']}"
             await update.message.reply_photo(photo=b["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
+            
+        # ИСПРАВЛЕНИЕ 3: Кнопка "Добавить" отправляется самым последним сообщением
+        await update.message.reply_text(f"👇 Добавить свою сборку в *{cat_name}* ({mode}):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btn))
         return
 
     # === ИНФО-РАЗДЕЛЫ ===
@@ -334,10 +337,11 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not db["tips"]:
             await update.message.reply_text("Советов пока нет. Будь первым!", reply_markup=kb)
         else:
-            await update.message.reply_text("💡 *СОВЕТЫ ОТ ИГРОКОВ*", parse_mode="Markdown", reply_markup=kb)
+            await update.message.reply_text("💡 *СОВЕТЫ ОТ ИГРОКОВ*", parse_mode="Markdown")
             for t in db["tips"][-5:]:
                 tkb = item_buttons(t["id"], "tips", t.get("likes",0), t.get("dislikes",0), t["author_id"], uid)
                 await update.message.reply_text(f"👤 *{t['author_name']}* пишет:\n\n{t['text']}", parse_mode="Markdown", reply_markup=tkb)
+            await update.message.reply_text("👇 Добавить свой совет:", reply_markup=kb)
         return
 
     if text == "📰 Новости сезона":
@@ -348,11 +352,53 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if n.get("photo"): await update.message.reply_photo(photo=n["photo"], caption=n["text"])
                 else: await update.message.reply_text(n["text"])
         return
+        
+    if text == "🏆 Зал славы":
+        users_list = list(db["users"].values())
+        top_users = sorted(users_list, key=lambda x: x.get("likes_received", 0), reverse=True)
+        top_users = [u for u in top_users if u.get("likes_received", 0) > 0][:5]
+        
+        if not top_users:
+            await update.message.reply_text("🏆 Зал славы пока пуст. Собирай лайки и стань первым!")
+            return
+            
+        res = "🏆 *ЗАЛ СЛАВЫ (Топ авторов)*\n━━━━━━━━━━━━━━━\n\n"
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        for i, u in enumerate(top_users):
+            rank = get_rank(u.get('likes_received', 0))
+            res += f"{medals[i]} *{u.get('name', 'Аноним')}* — {u.get('likes_received', 0)} ♥️ ({rank})\n"
+        await update.message.reply_text(res, parse_mode="Markdown")
+        return
 
     if text == "👑 АДМИН-ПАНЕЛЬ" and is_admin(uid):
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("📰 Добавить новость сезона", callback_data="adm_news")]])
         await update.message.reply_text("👑 Пульт Администратора\n(Удаление постов доступно прямо под самими постами по кнопке '🗑 Удалить')", reply_markup=kb)
         return
+
+async def show_auto_meta(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = str(update.message.from_user.id)
+    has_meta = False
+    
+    for mode in ["КБ", "СИ"]:
+        all_builds = []
+        for cat in db["builds"][mode]:
+            all_builds.extend(db["builds"][mode][cat])
+        
+        top3 = sorted(all_builds, key=lambda x: x["likes"], reverse=True)[:3]
+        top3 = [b for b in top3 if b["likes"] > 0] # Мета только если есть лайки
+        
+        if not top3: continue
+        has_meta = True
+        
+        await update.message.reply_text(f"🔥 *АБСОЛЮТНАЯ МЕТА - {mode}*", parse_mode="Markdown")
+        medals = ["🥇", "🥈", "🥉"]
+        for i, b in enumerate(top3):
+            kb = item_buttons(b["id"], "builds", b["likes"], b["dislikes"], b["author_id"], uid)
+            cap = f"{medals[i]} *{b['weapon']}* ({b['category']})\n📝 {b['desc']}\n👤 Автор: {b['author_name']}"
+            await update.message.reply_photo(photo=b["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
+            
+    if not has_meta:
+        await update.message.reply_text("🔥 Мета-оружие еще формируется! Ставьте лайки лучшим сборкам, чтобы они попали в этот ТОП.")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -360,10 +406,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uname = query.from_user.first_name
     data = query.data.split("|")
 
-    # НАВИГАЦИЯ ПО ПРОСМОТРУ/ДОБАВЛЕНИЮ
+    # ИСПРАВЛЕНИЕ 2 и 3: Правильный ключ (layouts) и кнопка добавления ВНИЗУ
     if data[0] == "view":
         item_type, mode = data[1], data[2]
         items = db[item_type][mode]
+        
         if not items:
             await query.message.reply_text("Пока ничего не загружено.")
         else:
@@ -372,9 +419,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if item_type == "sensa":
                     cap = f"⚙️ *Сенса ({mode})*\n📱 {i['os']} | {i['device']}\n⚖️ {i['gyro']} | 🤞 {i['fingers']}\n\n🔢 Код: `{i['code']}`\n📝 {i['desc']}\n👤 Автор: {i['author_name']}"
                     await query.message.reply_text(cap, parse_mode="Markdown", reply_markup=kb)
-                elif item_type == "layout":
+                elif item_type == "layouts":
                     cap = f"🎮 *Раскладка ({mode})*\n🔢 Код: `{i['code']}`\n📝 {i['desc']}\n👤 Автор: {i['author_name']}"
                     await query.message.reply_photo(photo=i["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
+                    
+            add_btn = [[InlineKeyboardButton("➕ Добавить свою", callback_data=f"add|{item_type}|{mode}")]]
+            name = "сенсу" if item_type == "sensa" else "раскладку"
+            await query.message.reply_text(f"👇 Добавить свою {name} ({mode}):", reply_markup=InlineKeyboardMarkup(add_btn))
+            
         await query.answer()
         return
 
@@ -385,7 +437,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = "sens_os"
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 Android", callback_data="sens|os|Android"), InlineKeyboardButton("🍏 iOS", callback_data="sens|os|iOS")]])
             await query.message.reply_text(f"⚙️ Добавление сенсы ({mode})\nВыбери платформу:", reply_markup=kb)
-        elif item_type == "layout":
+        elif item_type == "layouts":
             context.user_data["state"] = "layout_photo"
             await query.message.reply_text(f"🎮 Добавление раскладки ({mode})\n*Шаг 1/3*\nОтправь скриншот твоего HUD (экрана):", parse_mode="Markdown", reply_markup=cancel_menu())
         await query.answer()
@@ -432,7 +484,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         item_type, item_id, vote_type = data[1], data[2], data[3]
         item = None
         
-        # Поиск элемента в базе
         if item_type == "builds":
             for m in db["builds"]:
                 for c in db["builds"][m]:
@@ -443,7 +494,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if isinstance(db[item_type], dict) and isinstance(db[item_type][m], list):
                     for i in db[item_type][m]:
                         if i["id"] == item_id: item = i
-                elif isinstance(db[item_type], list): # Для советов
+                elif isinstance(db[item_type], list):
                     if m["id"] == item_id: item = m
 
         if not item:
@@ -501,10 +552,12 @@ def main():
     if not TOKEN: return
     threading.Thread(target=keep_alive, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", message_router))
     app.add_handler(MessageHandler(filters.PHOTO, process_photos))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
     app.add_handler(CallbackQueryHandler(button_handler))
+    
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
