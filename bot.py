@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # НАСТРОЙКИ
 # =========================
 TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_IDS = ["7083142762"] # ИСПРАВЛЕНО: ID теперь в виде строки
+ADMIN_IDS = ["7083142762"] 
 DONAT_CARD = "2202208162561493"
 MAX_DESC_LEN = 500
 
@@ -103,10 +103,17 @@ def weapons_menu():
     ], resize_keyboard=True)
 
 def item_buttons(item_id, item_type, likes, dislikes, author_id, user_id):
+    # Умная кнопка Избранного
+    is_fav = f"{item_type}|{item_id}" in db["users"].get(str(user_id), {}).get("favs", [])
+    fav_text = "🌟 Убрать из избранного" if is_fav else "⭐ В избранное"
+    
     kb = [[
         InlineKeyboardButton(f"♥️ {likes}", callback_data=f"vote|{item_type}|{item_id}|like"),
         InlineKeyboardButton(f"👎 {dislikes}", callback_data=f"vote|{item_type}|{item_id}|dislike"),
+    ], [
+        InlineKeyboardButton(fav_text, callback_data=f"fav|{item_type}|{item_id}")
     ]]
+    
     if is_admin(user_id) or str(user_id) == str(author_id):
         kb.append([InlineKeyboardButton("🗑 Удалить", callback_data=f"del|{item_type}|{item_id}")])
     return InlineKeyboardMarkup(kb)
@@ -116,7 +123,7 @@ def item_buttons(item_id, item_type, likes, dislikes, author_id, user_id):
 # =========================
 async def start_add_build(update: Update, context: ContextTypes.DEFAULT_TYPE, mode, category):
     context.user_data.update({"state": "build_photo", "mode": mode, "category": category})
-    msg = await update.effective_message.reply_text(
+    await update.effective_message.reply_text(
         f"📸 *Шаг 1/3*\nДобавляем сборку в *{category}* ({mode}).\n\nДля начала отправь скриншот твоей сборки модулей:", 
         parse_mode="Markdown", reply_markup=cancel_menu()
     )
@@ -134,7 +141,6 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Ошибка: Сейчас я жду от тебя картинку (скриншот), а не текст.", reply_markup=cancel_menu())
         return
 
-    # ПОИСК
     if state == "search":
         tag = normalize_weapon(text)
         results = []
@@ -154,7 +160,6 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await update.message.reply_photo(photo=b["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
         return
 
-    # СОВЕТЫ
     if state == "tip_add":
         tip = {"id": str(uuid.uuid4())[:8], "text": text, "author_name": uname, "author_id": uid, "likes": 0, "dislikes": 0, "voters": {}}
         db["tips"].append(tip)
@@ -163,14 +168,12 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("✅ Твой совет успешно опубликован!", reply_markup=main_menu(uid))
         return
 
-    # АДМИНКА - НОВОСТИ
     if state == "adm_news_text":
         context.user_data["news_text"] = text
         context.user_data["state"] = "adm_news_photo"
         await update.message.reply_text("📸 Теперь отправь картинку для новости (или нажми Отмена):", reply_markup=cancel_menu())
         return
 
-    # ДОБАВЛЕНИЕ СБОРКИ
     if state == "build_name":
         context.user_data["w_name"] = text
         context.user_data["w_tag"] = normalize_weapon(text)
@@ -188,7 +191,6 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("✅ Сборка успешно загружена в базу!", reply_markup=main_menu(uid))
         return
 
-    # ДОБАВЛЕНИЕ СЕНСЫ
     if state == "sens_code":
         context.user_data["code"] = text
         context.user_data["state"] = "sens_desc"
@@ -204,7 +206,6 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("✅ Код сенсы успешно добавлен!", reply_markup=main_menu(uid))
         return
 
-    # ДОБАВЛЕНИЕ РАСКЛАДКИ
     if state == "layout_code":
         context.user_data["code"] = text
         context.user_data["state"] = "layout_desc"
@@ -318,8 +319,74 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cap = f"🔫 *{b['weapon']}*\n📝 {b['desc']}\n👤 Автор: {b['author_name']}"
             await update.message.reply_photo(photo=b["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
             
-        # ИСПРАВЛЕНИЕ 3: Кнопка "Добавить" отправляется самым последним сообщением
         await update.message.reply_text(f"👇 Добавить свою сборку в *{cat_name}* ({mode}):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btn))
+        return
+
+    # === ПРОФИЛЬ ===
+    if text == "👤 Профиль":
+        u_info = db["users"].get(uid, {})
+        likes = u_info.get("likes_received", 0)
+        rank = get_rank(likes)
+        favs_count = len(u_info.get("favs", []))
+        
+        posts_count = 0
+        for m in db["builds"]:
+            for c in db["builds"][m]:
+                posts_count += len([b for b in db["builds"][m][c] if str(b.get("author_id")) == uid])
+        for m in db["sensa"]:
+            posts_count += len([b for b in db["sensa"][m] if str(b.get("author_id")) == uid])
+        for m in db["layouts"]:
+            posts_count += len([b for b in db["layouts"][m] if str(b.get("author_id")) == uid])
+        posts_count += len([t for t in db["tips"] if str(t.get("author_id")) == uid])
+
+        await update.message.reply_text(
+            f"👤 *ТВОЙ ПРОФИЛЬ*\n━━━━━━━━━━━━━━━\n📝 Имя: {u_info.get('name', 'Боец')}\n🏆 Ранг: {rank}\n♥️ Собранных лайков: {likes}\n📦 Опубликовано постов: {posts_count}\n⭐ В избранном: {favs_count}", 
+            parse_mode="Markdown"
+        )
+        return
+
+    # === ИЗБРАННОЕ ===
+    if text == "⭐ Избранное":
+        favs = db["users"].get(uid, {}).get("favs", [])
+        if not favs:
+            await update.message.reply_text("Твое избранное пока пусто! Нажимай '⭐ В избранное' под крутыми сборками, сенсой или советами.")
+            return
+        
+        await update.message.reply_text("⭐ *ТВОЕ ИЗБРАННОЕ (Последние 5)*", parse_mode="Markdown")
+        
+        for fav in favs[-5:]:
+            try: item_type, item_id = fav.split("|")
+            except: continue
+            
+            item = None
+            if item_type == "builds":
+                for m in db["builds"]:
+                    for c in db["builds"][m]:
+                        for i in db["builds"][m][c]:
+                            if i["id"] == item_id: item = i
+            else:
+                for m in db[item_type]:
+                    if isinstance(db[item_type], dict) and isinstance(db[item_type][m], list):
+                        for i in db[item_type][m]:
+                            if i["id"] == item_id: item = i
+                    elif isinstance(db[item_type], list):
+                        if m["id"] == item_id: item = m
+                        
+            if not item: continue
+            
+            kb = item_buttons(item["id"], item_type, item.get("likes",0), item.get("dislikes",0), item["author_id"], uid)
+            
+            if item_type == "builds":
+                cap = f"🔫 *{item['weapon']}* ({item['category']})\n📝 {item['desc']}\n👤 Автор: {item['author_name']}"
+                await update.message.reply_photo(photo=item["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
+            elif item_type == "sensa":
+                cap = f"⚙️ *Сенса ({item['mode']})*\n📱 {item['os']} | {item['device']}\n⚖️ {item['gyro']} | 🤞 {item['fingers']}\n\n🔢 Код: `{item['code']}`\n📝 {item['desc']}\n👤 Автор: {item['author_name']}"
+                await update.message.reply_text(cap, parse_mode="Markdown", reply_markup=kb)
+            elif item_type == "layouts":
+                cap = f"🎮 *Раскладка ({item['mode']})*\n🔢 Код: `{item['code']}`\n📝 {item['desc']}\n👤 Автор: {item['author_name']}"
+                await update.message.reply_photo(photo=item["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
+            elif item_type == "tips":
+                await update.message.reply_text(f"💡 *Совет от {item['author_name']}*\n\n{item['text']}", parse_mode="Markdown", reply_markup=kb)
         return
 
     # === ИНФО-РАЗДЕЛЫ ===
@@ -385,7 +452,7 @@ async def show_auto_meta(update: Update, context: ContextTypes.DEFAULT_TYPE):
             all_builds.extend(db["builds"][mode][cat])
         
         top3 = sorted(all_builds, key=lambda x: x["likes"], reverse=True)[:3]
-        top3 = [b for b in top3 if b["likes"] > 0] # Мета только если есть лайки
+        top3 = [b for b in top3 if b["likes"] > 0]
         
         if not top3: continue
         has_meta = True
@@ -406,7 +473,49 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uname = query.from_user.first_name
     data = query.data.split("|")
 
-    # ИСПРАВЛЕНИЕ 2 и 3: Правильный ключ (layouts) и кнопка добавления ВНИЗУ
+    # ДОБАВЛЕНИЕ/УДАЛЕНИЕ ИЗ ИЗБРАННОГО
+    if data[0] == "fav":
+        item_type, item_id = data[1], data[2]
+        fav_str = f"{item_type}|{item_id}"
+        
+        u_info = db["users"].get(uid)
+        if not u_info:
+            await query.answer("Профиль не найден! Отправь /start", show_alert=True)
+            return
+            
+        if "favs" not in u_info: u_info["favs"] = []
+            
+        if fav_str in u_info["favs"]:
+            u_info["favs"].remove(fav_str)
+            action = "❌ Убрано из избранного"
+        else:
+            u_info["favs"].append(fav_str)
+            action = "⭐ Добавлено в избранное"
+            
+        save_data(db)
+        
+        # Обновляем кнопку под постом, чтобы текст изменился
+        item = None
+        if item_type == "builds":
+            for m in db["builds"]:
+                for c in db["builds"][m]:
+                    for i in db["builds"][m][c]:
+                        if i["id"] == item_id: item = i
+        else:
+            for m in db[item_type]:
+                if isinstance(db[item_type], dict) and isinstance(db[item_type][m], list):
+                    for i in db[item_type][m]:
+                        if i["id"] == item_id: item = i
+                elif isinstance(db[item_type], list):
+                    if m["id"] == item_id: item = m
+                    
+        if item:
+            kb = item_buttons(item_id, item_type, item.get("likes",0), item.get("dislikes",0), item["author_id"], uid)
+            await query.edit_message_reply_markup(reply_markup=kb)
+            
+        await query.answer(action)
+        return
+
     if data[0] == "view":
         item_type, mode = data[1], data[2]
         items = db[item_type][mode]
@@ -460,7 +569,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    # КОНСТРУКТОР СЕНСЫ
     if data[0] == "sens":
         step, val = data[1], data[2]
         context.user_data[step] = val
@@ -479,7 +587,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("🔢 *Шаг 1/2*\nОтлично! Отправь цифровой код сенсы:", parse_mode="Markdown", reply_markup=cancel_menu())
         return
 
-    # ЛАЙКИ И УДАЛЕНИЕ
     if data[0] == "vote":
         item_type, item_id, vote_type = data[1], data[2], data[3]
         item = None
