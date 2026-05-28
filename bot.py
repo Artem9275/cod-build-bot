@@ -1,5 +1,5 @@
-import json
 import os
+import json
 import random
 import requests
 from datetime import datetime
@@ -22,8 +22,7 @@ from telegram.ext import (
 # =========================
 # НАСТРОЙКИ
 # =========================
-# Токен берется из переменных окружения
-TOKEN = os.environ.get("BOT_TOKEN") 
+TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = 7083142762
 ADMIN_IDS = [7083142762]
 DONAT_CARD = "2202208162561493"
@@ -32,12 +31,8 @@ DONAT_CARD = "2202208162561493"
 # НАСТРОЙКИ JSONBIN
 # =========================
 JSONBIN_KEY = "$2a$10$YToOVCHp5OUQNAy/9qZcE.NpzQ4.8Cxe0XD./KQeg7pU01mIzyDWG"
-BIN_ID = "6a16c58ef47d5c455c3c7925"
-JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
-JSONBIN_HEADERS = {
-    "X-Master-Key": JSONBIN_KEY,
-    "Content-Type": "application/json"
-}
+JSONBIN_ID = "6a16c58ef47d5c455c3c7925"
+JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}"
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS
@@ -59,25 +54,28 @@ def get_empty_db():
     }
 
 def load_data():
+    headers = {"X-Master-Key": JSONBIN_KEY}
     try:
-        response = requests.get(JSONBIN_URL, headers=JSONBIN_HEADERS)
+        response = requests.get(JSONBIN_URL, headers=headers)
         if response.status_code == 200:
-            return response.json().get('record', get_empty_db())
+            return response.json().get("record", get_empty_db())
         else:
             print(f"Ошибка загрузки БД: {response.status_code}")
     except Exception as e:
         print(f"Ошибка соединения с JSONBin: {e}")
-    
     return get_empty_db()
 
 def save_data(data):
+    headers = {
+        "Content-Type": "application/json",
+        "X-Master-Key": JSONBIN_KEY
+    }
     try:
-        response = requests.put(JSONBIN_URL, json=data, headers=JSONBIN_HEADERS)
-        if response.status_code != 200:
-            print(f"Ошибка сохранения БД: {response.text}")
+        requests.put(JSONBIN_URL, json=data, headers=headers)
     except Exception as e:
-        print(f"Ошибка при сохранении в JSONBin: {e}")
+        print(f"Ошибка сохранения в JSONBin: {e}")
 
+# Инициализация базы при запуске
 builds = load_data()
 
 # =========================
@@ -149,7 +147,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     user_id = str(user.id)
     
-    if user_id not in builds.get("users", {}):
+    if "users" not in builds:
+        builds["users"] = {}
+        
+    if user_id not in builds["users"]:
         builds["users"][user_id] = {"name": user.first_name, "join_date": datetime.now().isoformat()}
         save_data(builds)
     
@@ -195,6 +196,15 @@ async def add_build_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.answer()
 
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("state") != "waiting_photo":
+        await update.message.reply_text("❌ Сначала выбери категорию и нажми '➕ Добавить сборку'!")
+        return
+    
+    context.user_data["temp_photo"] = update.message.photo[-1].file_id
+    context.user_data["state"] = "waiting_description"
+    await update.message.reply_text("✍️ Теперь напиши описание модулей:")
+
 async def save_build_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user_name = update.message.from_user.first_name
@@ -219,6 +229,10 @@ async def save_build_description(update: Update, context: ContextTypes.DEFAULT_T
         "author_name": user_name,
         "created_at": datetime.now().isoformat()
     }
+    
+    if category not in builds:
+        builds[category] = []
+        
     builds[category].append(new_build)
     save_data(builds)
     context.user_data.clear()
@@ -228,15 +242,6 @@ async def save_build_description(update: Update, context: ContextTypes.DEFAULT_T
         parse_mode="Markdown",
         reply_markup=main_menu(user_id)
     )
-
-async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("state") != "waiting_photo":
-        await update.message.reply_text("❌ Сначала выбери категорию и нажми '➕ Добавить сборку'!")
-        return
-    
-    context.user_data["temp_photo"] = update.message.photo[-1].file_id
-    context.user_data["state"] = "waiting_description"
-    await update.message.reply_text("✍️ Теперь напиши описание модулей:")
 
 async def show_comments(update: Update, context: ContextTypes.DEFAULT_TYPE, category, index):
     query = update.callback_query
@@ -282,7 +287,7 @@ async def save_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     build = builds[category][index]
     author_id = build.get("author_id")
     
-    full_comment = f"*{user_name}* (id:{user_id}): {comment_text}"
+    full_comment = f"*{user_name}*: {comment_text}"
     builds[category][index]["comments"].append(full_comment)
     save_data(builds)
     
@@ -368,7 +373,7 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for cat in builds:
         if cat not in ["users", "news", "tips"]:
             for b in builds[cat]:
-                if b.get("author_id") == user_id:
+                if str(b.get("author_id")) == user_id:
                     user_builds += 1
     
     await update.message.reply_text(
@@ -586,20 +591,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 def main():
     if not TOKEN:
-        print("❌ ОШИБКА: Токен бота не найден. Убедись, что переменная BOT_TOKEN задана в окружении.")
+        print("❌ ОШИБКА: Токен не найден! Проверь переменные окружения (BOT_TOKEN).")
         return
 
+    print("🚀 Запуск бота...")
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Регистрация обработчиков
+    # Регистрация всех обработчиков
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
-    
-    print("🤖 Бот запущен! Ожидание сообщений...")
-    app.run_polling()
+
+    # drop_pending_updates=True помогает избежать старой ошибки telegram.error.Conflict
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
-    
