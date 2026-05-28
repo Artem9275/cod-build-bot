@@ -286,7 +286,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔍 Введи точное название оружия (например, AK47):", reply_markup=cancel_menu())
         return
 
-    # ВЕРНУЛИ ВЫЗОВ ФУНКЦИИ МЕТЫ!
     if text == "🔥 Мета оружие":
         await show_auto_meta(update, context)
         return
@@ -477,7 +476,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uname = query.from_user.first_name
     data = query.data.split("|")
 
-    # ДОБАВЛЕНИЕ/УДАЛЕНИЕ ИЗ ИЗБРАННОГО
+    # ДОБАВЛЕНИЕ/УДАЛЕНИЕ ИЗ ИЗБРАННОГО С ПУШ-УВЕДОМЛЕНИЕМ
     if data[0] == "fav":
         item_type, item_id = data[1], data[2]
         fav_str = f"{item_type}|{item_id}"
@@ -516,6 +515,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = item_buttons(item_id, item_type, item.get("likes",0), item.get("dislikes",0), item["author_id"], uid)
             await query.edit_message_reply_markup(reply_markup=kb)
             
+            # НОВОЕ УВЕДОМЛЕНИЕ ДЛЯ ИЗБРАННОГО
+            if action == "⭐ Добавлено в избранное" and str(item["author_id"]) != uid:
+                await notify_author(context, item["author_id"], f"⭐ Кто-то сохранил твой контент в Избранное!")
+
         await query.answer(action)
         return
 
@@ -590,6 +593,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("🔢 *Шаг 1/2*\nОтлично! Отправь цифровой код сенсы:", parse_mode="Markdown", reply_markup=cancel_menu())
         return
 
+    # ВОССТАНОВИЛИ ЛОГИКУ ПУШ-УВЕДОМЛЕНИЙ ДЛЯ ЛАЙКОВ/ДИЗЛАЙКОВ И НАЧИСЛЕНИЕ РАНГА
     if data[0] == "vote":
         item_type, item_id, vote_type = data[1], data[2], data[3]
         item = None
@@ -617,18 +621,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         cv = item.get("voters", {}).get(uid)
+        notif = ""
+        
         if cv == vote_type:
             item["voters"].pop(uid)
             item[vote_type + "s"] -= 1
+            if vote_type == "like" and auth_id in db["users"]: 
+                db["users"][auth_id]["likes_received"] -= 1
         else:
-            if cv: item[cv + "s"] -= 1
+            if cv: 
+                item[cv + "s"] -= 1
+                if cv == "like" and auth_id in db["users"]: 
+                    db["users"][auth_id]["likes_received"] -= 1
+                    
             item["voters"][uid] = vote_type
             item[vote_type + "s"] += 1
+            
+            if vote_type == "like": 
+                if auth_id in db["users"]: db["users"][auth_id]["likes_received"] += 1
+                notif = f"♥️ *{uname}* оценил твой пост!"
+            else:
+                notif = f"👎 *{uname}* поставил дизлайк твоему посту."
 
         save_data(db)
         kb = item_buttons(item_id, item_type, item.get("likes",0), item.get("dislikes",0), auth_id, uid)
         await query.edit_message_reply_markup(reply_markup=kb)
+        
+        if notif: await notify_author(context, auth_id, notif)
         await query.answer("Голос учтен!")
+        return
 
     if data[0] == "del":
         item_type, item_id = data[1], data[2]
