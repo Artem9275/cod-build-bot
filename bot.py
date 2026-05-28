@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # НАСТРОЙКИ
 # =========================
 TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_IDS = [7083142762] # Твой ID админа
+ADMIN_IDS = [7083142762]
 DONAT_CARD = "2202208162561493"
 MAX_DESC_LEN = 500
 
@@ -70,7 +70,6 @@ def load_data():
         if r.status_code == 200:
             data = r.json().get("record", get_empty_db())
             
-            # Железобетонная проверка старой базы на новые ключи
             if "users" not in data: data["users"] = {}
             if "builds" not in data: data["builds"] = {"КБ": {}, "СИ": {}}
             if "sensa" not in data: data["sensa"] = {"КБ": [], "СИ": []}
@@ -91,9 +90,6 @@ def save_data(data):
 
 db = load_data()
 
-# =========================
-# УВЕДОМЛЕНИЯ АВТОРУ
-# =========================
 async def notify_author(context, author_id, text):
     try:
         await context.bot.send_message(chat_id=author_id, text=text, parse_mode="Markdown")
@@ -118,7 +114,7 @@ def mode_menu():
 def weapons_menu():
     return ReplyKeyboardMarkup([
         ["🔫 Штурмовые", "🎯 Снайперские", "⚡ ПП"],
-        ["💣 Пулеметы", "💥 Дробовики", "🏹 Марксманские"],
+        ["💣 Пулеметы", "💥 Дробовики", "🏹 Пехотные"],
         ["🏠 В главное меню"]
     ], resize_keyboard=True)
 
@@ -144,7 +140,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(f"Салют, {user.first_name}! 🪂\nГотов разваливать кабины? Выбирай раздел:", reply_markup=main_menu(uid))
 
-# === ДОБАВЛЕНИЕ СБОРКИ ===
 async def start_add_build(update: Update, context: ContextTypes.DEFAULT_TYPE, mode, category):
     context.user_data.update({"state": "build_name", "mode": mode, "category": category})
     await update.message.reply_text(f"Добавляем сборку в *{category}* ({mode}).\nНапиши точное название оружия (например: AK-47, DLQ33):", parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
@@ -181,7 +176,6 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("✅ Сборка успешно загружена в базу!", reply_markup=main_menu(uid))
         return
 
-    # === ОБРАБОТКА ДЛЯ СЕНСЫ И РАСКЛАДКИ ===
     if state == "sens_code":
         context.user_data["code"] = text
         context.user_data["state"] = "sens_desc"
@@ -248,13 +242,14 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     uid = str(update.message.from_user.id)
     
-    if context.user_data.get("state"):
-        await process_text_inputs(update, context)
-        return
-
+    # ЖЕСТКИЙ ПЕРЕХВАТЧИК: Возврат в меню моментально прерывает любые зависшие ожидания
     if text in ["🏠 В главное меню", "/start"]:
         context.user_data.clear()
         await update.message.reply_text("🏠 Главное меню", reply_markup=main_menu(uid))
+        return
+
+    if context.user_data.get("state"):
+        await process_text_inputs(update, context)
         return
         
     if text == "🔫 Сборки (Оружие)":
@@ -285,7 +280,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🎮 Раскладка ({mode})\nОтправь скриншот твоего HUD (экрана):", reply_markup=ReplyKeyboardRemove())
         return
 
-    categories = ["🔫 Штурмовые", "🎯 Снайперские", "⚡ ПП", "💣 Пулеметы", "💥 Дробовики", "🏹 Марксманские"]
+    categories = ["🔫 Штурмовые", "🎯 Снайперские", "⚡ ПП", "💣 Пулеметы", "💥 Дробовики", "🏹 Пехотные"]
     if text in categories:
         mode = context.user_data.get("mode", "КБ")
         cat_name = text.split(" ")[1] 
@@ -314,7 +309,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"👤 *ТВОЙ ПРОФИЛЬ*\n━━━━━━━━━━━━━━━\nИмя: {u_info.get('name')}\nРанг: {rank}\nСобрано ♥️: {likes}", parse_mode="Markdown")
         return
 
-# === АВТО-МЕТА (ТОП 3) ===
 async def show_auto_meta(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
     for mode in ["КБ", "СИ"]:
@@ -332,7 +326,6 @@ async def show_auto_meta(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cap = f"{medals[i]} *{b['weapon']}* ({b['category']})\n📝 {b['desc']}\n👤 Автор: {b['author_name']}"
             await update.message.reply_photo(photo=b["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
 
-# === ОБРАБОТКА КНОПОК ===
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid = str(query.from_user.id)
@@ -420,9 +413,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.delete()
         await query.answer("Удалено!")
 
-# =========================
-# ЗАГЛУШКА ДЛЯ RENDER
-# =========================
 class DummyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -439,9 +429,6 @@ def keep_alive():
     except Exception as e:
         logger.error(f"Ошибка сервера: {e}")
 
-# =========================
-# ЗАПУСК
-# =========================
 def main():
     if not TOKEN:
         logger.error("❌ ОШИБКА: Токен не найден!")
