@@ -562,7 +562,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             action = "👎 Поставил дизлайк"
             notif = f"👎 *{user_name}* дизлайкнул твою сборку!"
         
-                save_data(builds)
+        save_data(builds)
         if notif and author_id and author_id != user_id:
             await notify_author(context, author_id, notif)
         
