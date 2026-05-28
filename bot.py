@@ -5,6 +5,7 @@ import requests
 import threading
 import uuid
 import re
+import logging
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import (
@@ -15,6 +16,15 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, 
     ContextTypes, filters, CallbackQueryHandler
 )
+
+# =========================
+# ВКЛЮЧАЕМ ЛОГИРОВАНИЕ ОШИБОК
+# =========================
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # =========================
 # НАСТРОЙКИ
@@ -38,7 +48,6 @@ def get_rank(likes):
     return "🔰 Новичок"
 
 def normalize_weapon(name):
-    # Убираем пробелы, дефисы и делаем заглавными (АК-47 -> АК47)
     return re.sub(r'[^a-zA-Zа-яА-Я0-9]', '', name).upper()
 
 # =========================
@@ -46,8 +55,8 @@ def normalize_weapon(name):
 # =========================
 def get_empty_db():
     return {
-        "users": {}, # id: {name, likes_received, rank, favs:[]}
-        "builds": {"КБ": {}, "СИ": {}}, # mode -> category -> [items]
+        "users": {},
+        "builds": {"КБ": {}, "СИ": {}}, 
         "sensa": {"КБ": [], "СИ": []},
         "layouts": {"КБ": [], "СИ": []},
         "tips": [],
@@ -60,18 +69,25 @@ def load_data():
         r = requests.get(JSONBIN_URL, headers=headers)
         if r.status_code == 200:
             data = r.json().get("record", get_empty_db())
-            # Инициализация новых ключей для старой базы
+            
+            # Железобетонная проверка старой базы на новые ключи
+            if "users" not in data: data["users"] = {}
+            if "builds" not in data: data["builds"] = {"КБ": {}, "СИ": {}}
             if "sensa" not in data: data["sensa"] = {"КБ": [], "СИ": []}
             if "layouts" not in data: data["layouts"] = {"КБ": [], "СИ": []}
             if "tips" not in data: data["tips"] = []
+            if "news" not in data: data["news"] = []
             return data
-    except Exception as e: print(e)
+    except Exception as e:
+        logger.error(f"Ошибка загрузки БД: {e}")
     return get_empty_db()
 
 def save_data(data):
     headers = {"Content-Type": "application/json", "X-Master-Key": JSONBIN_KEY}
-    try: requests.put(JSONBIN_URL, json=data, headers=headers)
-    except Exception as e: print(e)
+    try: 
+        requests.put(JSONBIN_URL, json=data, headers=headers)
+    except Exception as e: 
+        logger.error(f"Ошибка сохранения БД: {e}")
 
 db = load_data()
 
@@ -261,7 +277,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["mode"] = mode
             await update.message.reply_text(f"Оружие для {mode}. Выбери класс:", reply_markup=weapons_menu())
         elif sec == "sensa":
-            # Запуск конструктора сенсы
             context.user_data.update({"state": "sens_os", "mode": mode})
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 Android", callback_data="sens|os|Android"), InlineKeyboardButton("🍏 iOS", callback_data="sens|os|iOS")]])
             await update.message.reply_text(f"⚙️ Сенса ({mode})\nВыбери платформу:", reply_markup=kb)
@@ -273,7 +288,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     categories = ["🔫 Штурмовые", "🎯 Снайперские", "⚡ ПП", "💣 Пулеметы", "💥 Дробовики", "🏹 Марксманские"]
     if text in categories:
         mode = context.user_data.get("mode", "КБ")
-        cat_name = text.split(" ")[1] # Берем слово без смайлика
+        cat_name = text.split(" ")[1] 
         builds_list = db["builds"][mode].get(cat_name, [])
         
         btn = [[InlineKeyboardButton("➕ Добавить сборку", callback_data=f"addb|{mode}|{cat_name}")]]
@@ -282,7 +297,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         await update.message.reply_text(f"📂 *{text} ({mode})*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btn))
-        for b in builds_list[-10:]: # Показываем 10 последних
+        for b in builds_list[-10:]: 
             kb = item_buttons(b["id"], "builds", b["likes"], b["dislikes"], b["author_id"], uid)
             cap = f"🔫 *{b['weapon']}*\n📝 {b['desc']}\n👤 Автор: {b['author_name']}"
             await update.message.reply_photo(photo=b["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
@@ -324,12 +339,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uname = query.from_user.first_name
     data = query.data.split("|")
 
-    if data[0] == "addb": # addb|mode|category
+    if data[0] == "addb": 
         await start_add_build(update, context, data[1], data[2])
         await query.answer()
         return
 
-    # Конструктор сенсы
     if data[0] == "sens":
         step, val = data[1], data[2]
         context.user_data[step] = val
@@ -348,10 +362,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("🔢 Отлично! Отправь цифровой код сенсы:")
         return
 
-    # Система лайков
     if data[0] == "vote":
         item_type, item_id, vote_type = data[1], data[2], data[3]
-        # Поиск айтема
         item = None
         for mode in db[item_type]:
             if isinstance(db[item_type][mode], dict):
@@ -374,12 +386,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_vote = item["voters"].get(uid)
         notif = ""
         if current_vote == vote_type:
-            # Убираем оценку
             item["voters"].pop(uid)
             item[vote_type + "s"] -= 1
             if vote_type == "like" and auth_id in db["users"]: db["users"][auth_id]["likes_received"] -= 1
         else:
-            # Ставим оценку (убирая противоположную если была)
             if current_vote:
                 item[current_vote + "s"] -= 1
                 if current_vote == "like" and auth_id in db["users"]: db["users"][auth_id]["likes_received"] -= 1
@@ -400,7 +410,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data[0] == "del":
         item_type, item_id = data[1], data[2]
-        # Логика удаления (упрощенная для примера, ищет и удаляет)
         for mode in db[item_type]:
             if isinstance(db[item_type][mode], dict):
                 for cat in db[item_type][mode]:
@@ -420,22 +429,28 @@ class DummyHandler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/html')
         self.end_headers()
         self.wfile.write(b"CoDM Bot Active!")
+    def log_message(self, format, *args):
+        return
 
 def keep_alive():
     port = int(os.environ.get("PORT", 8080))
-    HTTPServer(('0.0.0.0', port), DummyHandler).serve_forever()
+    try:
+        HTTPServer(('0.0.0.0', port), DummyHandler).serve_forever()
+    except Exception as e:
+        logger.error(f"Ошибка сервера: {e}")
 
 # =========================
 # ЗАПУСК
 # =========================
 def main():
     if not TOKEN:
-        print("❌ ОШИБКА: Токен не найден!")
+        logger.error("❌ ОШИБКА: Токен не найден!")
         return
 
     threading.Thread(target=keep_alive, daemon=True).start()
-    app = ApplicationBuilder().token(TOKEN).build()
+    logger.info("✅ Запуск бота...")
     
+    app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, process_photos))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
