@@ -325,12 +325,39 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"👇 Добавить свою сборку в *{cat_name}* ({mode}):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btn))
         return
 
-    # === ПРОФИЛЬ ===
+    # === ПРОФИЛЬ С АВТО-ОЧИСТКОЙ ===
     if text == "👤 Профиль":
         u_info = db["users"].get(uid, {})
         likes = u_info.get("likes_received", 0)
         rank = get_rank(likes)
-        favs_count = len(u_info.get("favs", []))
+        
+        # Умная очистка мертвых ссылок и дублей
+        valid_favs = []
+        for fav in u_info.get("favs", []):
+            try:
+                it_type, it_id = fav.split("|")
+                item_exists = False
+                if it_type == "builds":
+                    for m in db["builds"]:
+                        for c in db["builds"][m]:
+                            if any(i["id"] == it_id for i in db["builds"][m][c]): item_exists = True
+                else:
+                    for m in db[it_type]:
+                        if isinstance(db[it_type], dict) and isinstance(db[it_type][m], list):
+                            if any(i["id"] == it_id for i in db[it_type][m]): item_exists = True
+                        elif isinstance(db[it_type], list):
+                            if any(m_tip["id"] == it_id for m_tip in db[it_type]): item_exists = True
+                            
+                if item_exists and fav not in valid_favs:
+                    valid_favs.append(fav)
+            except: pass
+
+        # Сохраняем чистый список, если были изменения
+        if len(u_info.get("favs", [])) != len(valid_favs):
+            db["users"][uid]["favs"] = valid_favs
+            save_data(db)
+
+        favs_count = len(valid_favs)
         
         posts_count = 0
         for m in db["builds"]:
@@ -476,7 +503,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uname = query.from_user.first_name
     data = query.data.split("|")
 
-    # ДОБАВЛЕНИЕ/УДАЛЕНИЕ ИЗ ИЗБРАННОГО С ПУШ-УВЕДОМЛЕНИЕМ
+    # ИЗБРАННОЕ: Надежное добавление и удаление с защитой от дублей
     if data[0] == "fav":
         item_type, item_id = data[1], data[2]
         fav_str = f"{item_type}|{item_id}"
@@ -489,12 +516,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "favs" not in u_info: u_info["favs"] = []
             
         if fav_str in u_info["favs"]:
-            u_info["favs"].remove(fav_str)
+            # Жестко удаляем ВСЕ копии этого поста из избранного
+            u_info["favs"] = [f for f in u_info["favs"] if f != fav_str]
             action = "❌ Убрано из избранного"
         else:
             u_info["favs"].append(fav_str)
             action = "⭐ Добавлено в избранное"
             
+        # Удаляем любые случайные дубликаты перед сохранением
+        u_info["favs"] = list(dict.fromkeys(u_info["favs"]))
         save_data(db)
         
         item = None
@@ -515,7 +545,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = item_buttons(item_id, item_type, item.get("likes",0), item.get("dislikes",0), item["author_id"], uid)
             await query.edit_message_reply_markup(reply_markup=kb)
             
-            # НОВОЕ УВЕДОМЛЕНИЕ ДЛЯ ИЗБРАННОГО
             if action == "⭐ Добавлено в избранное" and str(item["author_id"]) != uid:
                 await notify_author(context, item["author_id"], f"⭐ Кто-то сохранил твой контент в Избранное!")
 
@@ -593,7 +622,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("🔢 *Шаг 1/2*\nОтлично! Отправь цифровой код сенсы:", parse_mode="Markdown", reply_markup=cancel_menu())
         return
 
-    # ВОССТАНОВИЛИ ЛОГИКУ ПУШ-УВЕДОМЛЕНИЙ ДЛЯ ЛАЙКОВ/ДИЗЛАЙКОВ И НАЧИСЛЕНИЕ РАНГА
     if data[0] == "vote":
         item_type, item_id, vote_type = data[1], data[2], data[3]
         item = None
