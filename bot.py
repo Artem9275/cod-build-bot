@@ -18,7 +18,7 @@ from telegram.ext import (
 )
 
 # =========================
-# ВКЛЮЧАЕМ ЛОГИРОВАНИЕ ОШИБОК
+# ЛОГИРОВАНИЕ ОШИБОК
 # =========================
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 # =========================
 TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_IDS = [7083142762]
-DONAT_CARD = "2202208162561493"
 MAX_DESC_LEN = 500
 
 JSONBIN_KEY = "$2a$10$YToOVCHp5OUQNAy/9qZcE.NpzQ4.8Cxe0XD./KQeg7pU01mIzyDWG"
@@ -69,7 +68,6 @@ def load_data():
         r = requests.get(JSONBIN_URL, headers=headers)
         if r.status_code == 200:
             data = r.json().get("record", get_empty_db())
-            
             if "users" not in data: data["users"] = {}
             if "builds" not in data: data["builds"] = {"КБ": {}, "СИ": {}}
             if "sensa" not in data: data["sensa"] = {"КБ": [], "СИ": []}
@@ -142,7 +140,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_add_build(update: Update, context: ContextTypes.DEFAULT_TYPE, mode, category):
     context.user_data.update({"state": "build_name", "mode": mode, "category": category})
-    await update.message.reply_text(f"Добавляем сборку в *{category}* ({mode}).\nНапиши точное название оружия (например: AK-47, DLQ33):", parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
+    # ИСПРАВЛЕНИЕ: Используем effective_message для работы с инлайн-кнопками
+    await update.effective_message.reply_text(
+        f"👇 *Шаг 1/3*\nДобавляем сборку в категорию *{category}* ({mode}).\n\nНапиши точное название оружия (например: AK-47, DLQ33):", 
+        parse_mode="Markdown", 
+        reply_markup=ReplyKeyboardRemove()
+    )
 
 async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -150,11 +153,16 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
     uid = str(update.message.from_user.id)
     uname = update.message.from_user.first_name
 
+    # ЗАЩИТА: Если ждем фото, а прислали текст
+    if state in ["build_photo", "layout_photo"]:
+        await update.message.reply_text("❌ Сейчас я жду от тебя скриншот (фото). Пожалуйста, отправь картинку или нажми '🏠 В главное меню' для отмены.")
+        return
+
     if state == "build_name":
         context.user_data["w_name"] = text
         context.user_data["w_tag"] = normalize_weapon(text)
         context.user_data["state"] = "build_photo"
-        await update.message.reply_text("📸 Отлично! Теперь отправь скриншот сборки модулей:")
+        await update.message.reply_text("📸 *Шаг 2/3*\nОтлично! Теперь отправь скриншот твоей сборки модулей:", parse_mode="Markdown")
         return
 
     if state == "build_desc":
@@ -176,11 +184,12 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("✅ Сборка успешно загружена в базу!", reply_markup=main_menu(uid))
         return
 
+    # ОБРАБОТКА ТЕКСТА: Сенса
     if state == "sens_code":
         context.user_data["code"] = text
         context.user_data["state"] = "sens_desc"
         kb = ReplyKeyboardMarkup([["⏭ Пропустить"]], resize_keyboard=True)
-        await update.message.reply_text("✍️ Добавь описание (макс 500 симв.) или нажми 'Пропустить':", reply_markup=kb)
+        await update.message.reply_text("✍️ *Шаг 2/2*\nДобавь описание (макс 500 симв.) или нажми 'Пропустить':", parse_mode="Markdown", reply_markup=kb)
         return
 
     if state == "sens_desc":
@@ -202,11 +211,12 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("✅ Код сенсы успешно добавлен!", reply_markup=main_menu(uid))
         return
 
+    # ОБРАБОТКА ТЕКСТА: Раскладка
     if state == "layout_code":
         context.user_data["code"] = text
         context.user_data["state"] = "layout_desc"
         kb = ReplyKeyboardMarkup([["⏭ Пропустить"]], resize_keyboard=True)
-        await update.message.reply_text("✍️ Добавь описание (макс 500 симв.) или нажми 'Пропустить':", reply_markup=kb)
+        await update.message.reply_text("✍️ *Шаг 3/3*\nДобавь описание (макс 500 симв.) или нажми 'Пропустить':", parse_mode="Markdown", reply_markup=kb)
         return
 
     if state == "layout_desc":
@@ -228,26 +238,33 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def process_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("state")
+    
+    # ЗАЩИТА: Если ждем текст, а прислали фото
+    if state in ["build_name", "build_desc", "sens_code", "sens_desc", "layout_code", "layout_desc"]:
+        await update.message.reply_text("❌ Сейчас я жду от тебя текст, а не скриншот. Пожалуйста, напиши текст или нажми '🏠 В главное меню' для отмены.")
+        return
+
     if state == "build_photo":
         context.user_data["photo"] = update.message.photo[-1].file_id
         context.user_data["state"] = "build_desc"
-        await update.message.reply_text("✍️ Напиши описание сборки модулей (макс 500 символов):")
+        await update.message.reply_text("✍️ *Шаг 3/3*\nСупер! Теперь напиши описание для этой сборки (как работает, какие плюсы, макс. 500 символов):", parse_mode="Markdown")
     elif state == "layout_photo":
         context.user_data["photo"] = update.message.photo[-1].file_id
         context.user_data["state"] = "layout_code"
-        await update.message.reply_text("🔢 Теперь отправь код раскладки (например: 7326154...):")
+        await update.message.reply_text("🔢 *Шаг 2/3*\nТеперь отправь цифровой код раскладки (например: 7326154...):", parse_mode="Markdown")
 
 # === МЕНЮ И НАВИГАЦИЯ ===
 async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     uid = str(update.message.from_user.id)
     
-    # ЖЕСТКИЙ ПЕРЕХВАТЧИК: Возврат в меню моментально прерывает любые зависшие ожидания
+    # ЖЕСТКИЙ ПЕРЕХВАТЧИК: Моментально отменяет любые задачи и возвращает домой
     if text in ["🏠 В главное меню", "/start"]:
         context.user_data.clear()
         await update.message.reply_text("🏠 Главное меню", reply_markup=main_menu(uid))
         return
 
+    # Если мы в процессе добавления чего-либо
     if context.user_data.get("state"):
         await process_text_inputs(update, context)
         return
@@ -277,7 +294,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚙️ Сенса ({mode})\nВыбери платформу:", reply_markup=kb)
         elif sec == "layouts":
             context.user_data.update({"state": "layout_photo", "mode": mode})
-            await update.message.reply_text(f"🎮 Раскладка ({mode})\nОтправь скриншот твоего HUD (экрана):", reply_markup=ReplyKeyboardRemove())
+            await update.message.reply_text(f"🎮 Раскладка ({mode})\n*Шаг 1/3*\nОтправь скриншот твоего HUD (экрана):", parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
         return
 
     categories = ["🔫 Штурмовые", "🎯 Снайперские", "⚡ ПП", "💣 Пулеметы", "💥 Дробовики", "🏹 Пехотные"]
@@ -352,7 +369,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif step == "fingers":
             context.user_data["state"] = "sens_code"
             await query.message.delete()
-            await query.message.reply_text("🔢 Отлично! Отправь цифровой код сенсы:")
+            await query.message.reply_text("🔢 *Шаг 1/2*\nОтлично! Отправь цифровой код сенсы:", parse_mode="Markdown")
         return
 
     if data[0] == "vote":
