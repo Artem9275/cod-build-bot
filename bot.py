@@ -562,6 +562,44 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             action = "👎 Поставил дизлайк"
             notif = f"👎 *{user_name}* дизлайкнул твою сборку!"
         
-        save_data(builds)
+                save_data(builds)
         if notif and author_id and author_id != user_id:
-            await notify_author(c
+            await notify_author(context, author_id, notif)
+        
+        keyboard = build_buttons(category, index, build, user_id)
+        await query.edit_message_reply_markup(reply_markup=keyboard)
+        await query.answer(action)
+        return
+    
+    # Удаление сборки (админ)
+    if data.startswith("del_build|") and is_admin(user_id):
+        parts = data.split("|")
+        category, index = parts[1], int(parts[2])
+        del builds[category][index]
+        save_data(builds)
+        await query.message.delete()
+        await query.answer("✅ Сборка удалена!")
+        return
+
+# =========================
+# ЗАПУСК
+# =========================
+def main():
+    if not TOKEN:
+        print("❌ ОШИБКА: Токен бота не найден. Убедись, что переменная BOT_TOKEN задана в окружении.")
+        return
+
+    app = ApplicationBuilder().token(TOKEN).build()
+    
+    # Регистрация обработчиков
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    
+    print("🤖 Бот запущен! Ожидание сообщений...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
+    
