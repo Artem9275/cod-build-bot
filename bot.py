@@ -136,7 +136,7 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
     uid = str(update.message.from_user.id)
     uname = update.message.from_user.first_name
 
-    if state in ["build_photo", "layout_photo"]:
+    if state in ["build_photo", "layout_photo", "adm_news_photo_req"]:
         await update.message.reply_text("❌ Ошибка: Сейчас я жду от тебя картинку (скриншот), а не текст.", reply_markup=cancel_menu())
         return
 
@@ -167,12 +167,20 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("✅ Твой совет успешно опубликован!", reply_markup=main_menu(uid))
         return
 
-    if state == "adm_news_text":
+    if state == "adm_news_text_only":
         news_item = {"id": str(uuid.uuid4())[:8], "type": "news", "text": text, "photo": None}
         db["news"].append(news_item)
         save_data(db)
         context.user_data.clear()
         await update.message.reply_text("✅ Текстовая новость сезона успешно опубликована!", reply_markup=main_menu(uid))
+        return
+
+    if state == "adm_news_text_req":
+        news_item = {"id": str(uuid.uuid4())[:8], "type": "news", "text": text, "photo": context.user_data["news_photo"]}
+        db["news"].append(news_item)
+        save_data(db)
+        context.user_data.clear()
+        await update.message.reply_text("✅ Новость с картинкой успешно опубликована!", reply_markup=main_menu(uid))
         return
 
     if state == "build_name":
@@ -228,8 +236,14 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def process_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("state")
     
-    if state in ["build_name", "build_desc", "sens_code", "sens_desc", "layout_code", "layout_desc", "tip_add", "search", "adm_news_text"]:
+    if state in ["build_name", "build_desc", "sens_code", "sens_desc", "layout_code", "layout_desc", "tip_add", "search", "adm_news_text_only", "adm_news_text_req"]:
         await update.message.reply_text("❌ Ошибка: Сейчас я жду текст, а не скриншот.", reply_markup=cancel_menu())
+        return
+
+    if state == "adm_news_photo_req":
+        context.user_data["news_photo"] = update.message.photo[-1].file_id
+        context.user_data["state"] = "adm_news_text_req"
+        await update.message.reply_text("📸 Фото получено!\nТеперь отправь текст новости:", reply_markup=cancel_menu())
         return
 
     if state == "build_photo":
@@ -318,7 +332,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"👇 Добавить свою сборку в *{cat_name}* ({mode}):", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btn))
         return
 
-    # === ПРОФИЛЬ С АВТО-ОЧИСТКОЙ ===
     if text == "👤 Профиль":
         u_info = db["users"].get(uid, {})
         likes = u_info.get("likes_received", 0)
@@ -366,7 +379,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # === ИЗБРАННОЕ ===
     if text == "⭐ Избранное":
         favs = db["users"].get(uid, {}).get("favs", [])
         if not favs:
@@ -410,7 +422,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"💡 *Совет от {item['author_name']}*\n\n{item['text']}", parse_mode="Markdown", reply_markup=kb)
         return
 
-    # === ИНФО-РАЗДЕЛЫ ===
     if text == "👥 Помощь":
         guide = "📖 *ГАЙД ПО БОТУ*\n\n1️⃣ *Сборки, Сенса, Раскладка* - здесь ты можешь найти или загрузить свои варианты настройки игры. Разделены на КБ и СИ.\n2️⃣ *Добавление* - следуй инструкциям бота на экране. Если ошибся - жми 'Отмена'.\n3️⃣ *Оценки* - ставь ♥️ или 👎. Автор с наибольшим количеством лайков получает высокие ранги (до Легенды).\n4️⃣ *Поиск* - ищи лучшие сборки на конкретную пушку по её названию.\n5️⃣ *Мета* - автоматический ТОП-3 самых залайканных пушек в боте."
         await update.message.reply_text(guide, parse_mode="Markdown")
@@ -437,21 +448,27 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Новостей пока нет.")
         else:
             for n in db["news"][-3:]:
-                # Умная отправка длинных текстов
+                # Кнопка удаления для админа
+                reply_markup = None
+                if is_admin(uid):
+                    del_kb = [[InlineKeyboardButton("🗑 Удалить новость", callback_data=f"del_news|{n['id']}")]]
+                    reply_markup = InlineKeyboardMarkup(del_kb)
+
                 text_to_send = n["text"]
                 if n.get("photo"):
                     if len(text_to_send) > 1000:
                         await update.message.reply_photo(photo=n["photo"])
-                        # Режем на куски по 4000 символов
                         chunks = [text_to_send[i:i+4000] for i in range(0, len(text_to_send), 4000)]
-                        for chunk in chunks:
-                            await update.message.reply_text(chunk)
+                        for i, chunk in enumerate(chunks):
+                            rm = reply_markup if i == len(chunks)-1 else None
+                            await update.message.reply_text(chunk, reply_markup=rm)
                     else:
-                        await update.message.reply_photo(photo=n["photo"], caption=text_to_send)
+                        await update.message.reply_photo(photo=n["photo"], caption=text_to_send, reply_markup=reply_markup)
                 else:
                     chunks = [text_to_send[i:i+4000] for i in range(0, len(text_to_send), 4000)]
-                    for chunk in chunks:
-                        await update.message.reply_text(chunk)
+                    for i, chunk in enumerate(chunks):
+                        rm = reply_markup if i == len(chunks)-1 else None
+                        await update.message.reply_text(chunk, reply_markup=rm)
         return
         
     if text == "🏆 Зал славы":
@@ -472,8 +489,11 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "👑 АДМИН-ПАНЕЛЬ" and is_admin(uid):
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📰 Добавить новость сезона (Текст)", callback_data="adm_news")]])
-        await update.message.reply_text("👑 Пульт Администратора\n(Удаление постов доступно прямо под самими постами по кнопке '🗑 Удалить')", reply_markup=kb)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📝 Добавить новость (Только текст)", callback_data="adm_news_txt")],
+            [InlineKeyboardButton("🖼 Добавить новость (Фото + Текст)", callback_data="adm_news_pic")]
+        ])
+        await update.message.reply_text("👑 Пульт Администратора\n(Удаление любых постов и новостей доступно прямо под самими публикациями по кнопке '🗑 Удалить')", reply_markup=kb)
         return
 
 async def show_auto_meta(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -506,6 +526,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(query.from_user.id)
     uname = query.from_user.first_name
     data = query.data.split("|")
+
+    # УДАЛЕНИЕ НОВОСТЕЙ
+    if data[0] == "del_news":
+        news_id = data[1]
+        db["news"] = [n for n in db["news"] if n.get("id") != news_id]
+        save_data(db)
+        await query.message.delete()
+        await query.answer("Новость удалена!")
+        return
 
     if data[0] == "fav":
         item_type, item_id = data[1], data[2]
@@ -595,9 +624,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    if data[0] == "adm_news":
-        context.user_data["state"] = "adm_news_text"
+    # АДМИНКА НОВОСТЕЙ
+    if data[0] == "adm_news_txt":
+        context.user_data["state"] = "adm_news_text_only"
         await query.message.reply_text("Отправь текст новости сезона.\n(Если текст очень длинный, бот сам разобьет его на части):", reply_markup=cancel_menu())
+        await query.answer()
+        return
+
+    if data[0] == "adm_news_pic":
+        context.user_data["state"] = "adm_news_photo_req"
+        await query.message.reply_text("Отправь картинку (скриншот) для новости:", reply_markup=cancel_menu())
         await query.answer()
         return
 
