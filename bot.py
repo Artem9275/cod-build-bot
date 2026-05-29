@@ -136,7 +136,7 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
     uid = str(update.message.from_user.id)
     uname = update.message.from_user.first_name
 
-    if state in ["build_photo", "layout_photo", "adm_news_photo"]:
+    if state in ["build_photo", "layout_photo"]:
         await update.message.reply_text("❌ Ошибка: Сейчас я жду от тебя картинку (скриншот), а не текст.", reply_markup=cancel_menu())
         return
 
@@ -168,9 +168,11 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     if state == "adm_news_text":
-        context.user_data["news_text"] = text
-        context.user_data["state"] = "adm_news_photo"
-        await update.message.reply_text("📸 Теперь отправь картинку для новости (или нажми Отмена):", reply_markup=cancel_menu())
+        news_item = {"id": str(uuid.uuid4())[:8], "type": "news", "text": text, "photo": None}
+        db["news"].append(news_item)
+        save_data(db)
+        context.user_data.clear()
+        await update.message.reply_text("✅ Текстовая новость сезона успешно опубликована!", reply_markup=main_menu(uid))
         return
 
     if state == "build_name":
@@ -198,7 +200,7 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if state == "sens_desc":
         mode = context.user_data["mode"]
-        item = {"id": str(uuid.uuid4())[:8], "type": "sensa", "mode": mode, "os": context.user_data["os"], "device": context.user_data["dev"], "gyro": context.user_data["gyro"], "fingers": context.user_data["fingers"], "code": context.user_data["code"], "desc": "" if text == "⏭ Пропустить" else text[:MAX_DESC_LEN], "author_id": uid, "author_name": uname, "likes": 0, "dislikes": 0, "voters": {}}
+        item = {"id": str(uuid.uuid4())[:8], "type": "sensa", "mode": mode, "os": context.user_data["os"], "device": context.user_data["dev"], "gyro": context.user_data["gyro"], "code": context.user_data["code"], "desc": "" if text == "⏭ Пропустить" else text[:MAX_DESC_LEN], "author_id": uid, "author_name": uname, "likes": 0, "dislikes": 0, "voters": {}}
         db["sensa"][mode].append(item)
         save_data(db)
         context.user_data.clear()
@@ -213,7 +215,7 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if state == "layout_desc":
         mode = context.user_data["mode"]
-        item = {"id": str(uuid.uuid4())[:8], "type": "layout", "mode": mode, "photo": context.user_data["photo"], "code": context.user_data["code"], "desc": "" if text == "⏭ Пропустить" else text[:MAX_DESC_LEN], "author_id": uid, "author_name": uname, "likes": 0, "dislikes": 0, "voters": {}}
+        item = {"id": str(uuid.uuid4())[:8], "type": "layout", "mode": mode, "fingers": context.user_data.get("fingers", "Не указано"), "photo": context.user_data["photo"], "code": context.user_data["code"], "desc": "" if text == "⏭ Пропустить" else text[:MAX_DESC_LEN], "author_id": uid, "author_name": uname, "likes": 0, "dislikes": 0, "voters": {}}
         db["layouts"][mode].append(item)
         save_data(db)
         context.user_data.clear()
@@ -225,18 +227,9 @@ async def process_text_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE
 # =========================
 async def process_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("state")
-    uid = str(update.message.from_user.id)
     
     if state in ["build_name", "build_desc", "sens_code", "sens_desc", "layout_code", "layout_desc", "tip_add", "search", "adm_news_text"]:
         await update.message.reply_text("❌ Ошибка: Сейчас я жду текст, а не скриншот.", reply_markup=cancel_menu())
-        return
-
-    if state == "adm_news_photo":
-        news_item = {"id": str(uuid.uuid4())[:8], "type": "news", "text": context.user_data["news_text"], "photo": update.message.photo[-1].file_id}
-        db["news"].append(news_item)
-        save_data(db)
-        context.user_data.clear()
-        await update.message.reply_text("✅ Новость сезона опубликована!", reply_markup=main_menu(uid))
         return
 
     if state == "build_photo":
@@ -331,7 +324,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         likes = u_info.get("likes_received", 0)
         rank = get_rank(likes)
         
-        # Умная очистка мертвых ссылок и дублей
         valid_favs = []
         for fav in u_info.get("favs", []):
             try:
@@ -352,7 +344,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     valid_favs.append(fav)
             except: pass
 
-        # Сохраняем чистый список, если были изменения
         if len(u_info.get("favs", [])) != len(valid_favs):
             db["users"][uid]["favs"] = valid_favs
             save_data(db)
@@ -410,10 +401,10 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cap = f"🔫 *{item['weapon']}* ({item['category']})\n📝 {item['desc']}\n👤 Автор: {item['author_name']}"
                 await update.message.reply_photo(photo=item["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
             elif item_type == "sensa":
-                cap = f"⚙️ *Сенса ({item['mode']})*\n📱 {item['os']} | {item['device']}\n⚖️ {item['gyro']} | 🤞 {item['fingers']}\n\n🔢 Код: `{item['code']}`\n📝 {item['desc']}\n👤 Автор: {item['author_name']}"
+                cap = f"⚙️ *Сенса ({item['mode']})*\n📱 {item['os']} | {item['device']}\n⚖️ {item['gyro']}\n\n🔢 Код: `{item['code']}`\n📝 {item['desc']}\n👤 Автор: {item['author_name']}"
                 await update.message.reply_text(cap, parse_mode="Markdown", reply_markup=kb)
             elif item_type == "layouts":
-                cap = f"🎮 *Раскладка ({item['mode']})*\n🔢 Код: `{item['code']}`\n📝 {item['desc']}\n👤 Автор: {item['author_name']}"
+                cap = f"🎮 *Раскладка ({item['mode']})*\n🤞 {item.get('fingers', 'Не указано')}\n🔢 Код: `{item['code']}`\n📝 {item['desc']}\n👤 Автор: {item['author_name']}"
                 await update.message.reply_photo(photo=item["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
             elif item_type == "tips":
                 await update.message.reply_text(f"💡 *Совет от {item['author_name']}*\n\n{item['text']}", parse_mode="Markdown", reply_markup=kb)
@@ -446,8 +437,21 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Новостей пока нет.")
         else:
             for n in db["news"][-3:]:
-                if n.get("photo"): await update.message.reply_photo(photo=n["photo"], caption=n["text"])
-                else: await update.message.reply_text(n["text"])
+                # Умная отправка длинных текстов
+                text_to_send = n["text"]
+                if n.get("photo"):
+                    if len(text_to_send) > 1000:
+                        await update.message.reply_photo(photo=n["photo"])
+                        # Режем на куски по 4000 символов
+                        chunks = [text_to_send[i:i+4000] for i in range(0, len(text_to_send), 4000)]
+                        for chunk in chunks:
+                            await update.message.reply_text(chunk)
+                    else:
+                        await update.message.reply_photo(photo=n["photo"], caption=text_to_send)
+                else:
+                    chunks = [text_to_send[i:i+4000] for i in range(0, len(text_to_send), 4000)]
+                    for chunk in chunks:
+                        await update.message.reply_text(chunk)
         return
         
     if text == "🏆 Зал славы":
@@ -468,7 +472,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "👑 АДМИН-ПАНЕЛЬ" and is_admin(uid):
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📰 Добавить новость сезона", callback_data="adm_news")]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📰 Добавить новость сезона (Текст)", callback_data="adm_news")]])
         await update.message.reply_text("👑 Пульт Администратора\n(Удаление постов доступно прямо под самими постами по кнопке '🗑 Удалить')", reply_markup=kb)
         return
 
@@ -503,7 +507,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uname = query.from_user.first_name
     data = query.data.split("|")
 
-    # ИЗБРАННОЕ: Надежное добавление и удаление с защитой от дублей
     if data[0] == "fav":
         item_type, item_id = data[1], data[2]
         fav_str = f"{item_type}|{item_id}"
@@ -516,14 +519,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "favs" not in u_info: u_info["favs"] = []
             
         if fav_str in u_info["favs"]:
-            # Жестко удаляем ВСЕ копии этого поста из избранного
             u_info["favs"] = [f for f in u_info["favs"] if f != fav_str]
             action = "❌ Убрано из избранного"
         else:
             u_info["favs"].append(fav_str)
             action = "⭐ Добавлено в избранное"
             
-        # Удаляем любые случайные дубликаты перед сохранением
         u_info["favs"] = list(dict.fromkeys(u_info["favs"]))
         save_data(db)
         
@@ -561,10 +562,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for i in items[-5:]:
                 kb = item_buttons(i["id"], item_type, i.get("likes",0), i.get("dislikes",0), i["author_id"], uid)
                 if item_type == "sensa":
-                    cap = f"⚙️ *Сенса ({mode})*\n📱 {i['os']} | {i['device']}\n⚖️ {i['gyro']} | 🤞 {i['fingers']}\n\n🔢 Код: `{i['code']}`\n📝 {i['desc']}\n👤 Автор: {i['author_name']}"
+                    cap = f"⚙️ *Сенса ({mode})*\n📱 {i['os']} | {i['device']}\n⚖️ {i['gyro']}\n\n🔢 Код: `{i['code']}`\n📝 {i['desc']}\n👤 Автор: {i['author_name']}"
                     await query.message.reply_text(cap, parse_mode="Markdown", reply_markup=kb)
                 elif item_type == "layouts":
-                    cap = f"🎮 *Раскладка ({mode})*\n🔢 Код: `{i['code']}`\n📝 {i['desc']}\n👤 Автор: {i['author_name']}"
+                    cap = f"🎮 *Раскладка ({mode})*\n🤞 {i.get('fingers', 'Не указано')}\n🔢 Код: `{i['code']}`\n📝 {i['desc']}\n👤 Автор: {i['author_name']}"
                     await query.message.reply_photo(photo=i["photo"], caption=cap, parse_mode="Markdown", reply_markup=kb)
                     
             add_btn = [[InlineKeyboardButton("➕ Добавить свою", callback_data=f"add|{item_type}|{mode}")]]
@@ -582,8 +583,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 Android", callback_data="sens|os|Android"), InlineKeyboardButton("🍏 iOS", callback_data="sens|os|iOS")]])
             await query.message.reply_text(f"⚙️ Добавление сенсы ({mode})\nВыбери платформу:", reply_markup=kb)
         elif item_type == "layouts":
-            context.user_data["state"] = "layout_photo"
-            await query.message.reply_text(f"🎮 Добавление раскладки ({mode})\n*Шаг 1/3*\nОтправь скриншот твоего HUD (экрана):", parse_mode="Markdown", reply_markup=cancel_menu())
+            context.user_data["state"] = "layout_fingers"
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{i} 🤞", callback_data=f"layout|fingers|{i} пальцев") for i in range(2, 7)]])
+            await query.message.reply_text(f"🎮 Добавление раскладки ({mode})\nВыбери хват (сколько пальцев):", reply_markup=kb)
         await query.answer()
         return
 
@@ -595,13 +597,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data[0] == "adm_news":
         context.user_data["state"] = "adm_news_text"
-        await query.message.reply_text("Напиши текст новости:", reply_markup=cancel_menu())
+        await query.message.reply_text("Отправь текст новости сезона.\n(Если текст очень длинный, бот сам разобьет его на части):", reply_markup=cancel_menu())
         await query.answer()
         return
 
     if data[0] == "addb": 
         await start_add_build(update, context, data[1], data[2])
         await query.answer()
+        return
+
+    if data[0] == "layout" and data[1] == "fingers":
+        context.user_data["fingers"] = data[2]
+        context.user_data["state"] = "layout_photo"
+        await query.message.delete()
+        await query.message.reply_text("📸 *Шаг 1/3*\nОтправь скриншот твоего HUD (экрана):", parse_mode="Markdown", reply_markup=cancel_menu())
         return
 
     if data[0] == "sens":
@@ -614,9 +623,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("Включен", callback_data="sens|gyro|С гироскопом"), InlineKeyboardButton("Выключен", callback_data="sens|gyro|Без гироскопа")]])
             await query.edit_message_text("Гироскоп:", reply_markup=kb)
         elif step == "gyro":
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{i} 🤞", callback_data=f"sens|fingers|{i} пальцев") for i in range(2, 7)]])
-            await query.edit_message_text("Сколько пальцев хват?", reply_markup=kb)
-        elif step == "fingers":
             context.user_data["state"] = "sens_code"
             await query.message.delete()
             await query.message.reply_text("🔢 *Шаг 1/2*\nОтлично! Отправь цифровой код сенсы:", parse_mode="Markdown", reply_markup=cancel_menu())
